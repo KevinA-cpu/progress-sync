@@ -1,8 +1,10 @@
 # Progress Sync
 
-Progress Sync starts with a local record of exact HDLBits submissions. This first
-slice implements [ticket #2](https://github.com/KevinA-cpu/progress-sync/issues/2).
-**GitHub authorization, uploads, and cross-browser recovery are not implemented yet.**
+Progress Sync records exact HDLBits submissions locally and supports GitHub App
+device authorization with session-only credentials. These slices implement
+[ticket #2](https://github.com/KevinA-cpu/progress-sync/issues/2) and
+[ticket #3](https://github.com/KevinA-cpu/progress-sync/issues/3).
+**Repository creation, uploads, and cross-browser recovery are not implemented yet.**
 
 HDLBits login is not required. The extension's progress is separate from HDLBits'
 official completion state.
@@ -23,6 +25,7 @@ focused run:
 
 ```sh
 pnpm test -- capture.spec.ts -g "editing while grading"
+pnpm test -- github.spec.ts
 ```
 
 After a build, tests can be rerun without rebuilding:
@@ -39,9 +42,66 @@ pnpm exec playwright test capture.spec.ts
 4. Click the Progress Sync toolbar action to open its progress tab.
 5. On an HTTPS HDLBits problem page, use the text editor and the in-page
    **Submit** button. Keep the progress tab open to see the observation.
+6. Use **Connect GitHub** to open the dedicated connection tab. GitHub App
+   configuration is required only for connecting, not for local HDLBits capture.
 
 Chromium 120 or newer is required. The currently tested browser version is
 153.0.8010.12. The production build needs no local server.
+
+## Configure the GitHub App
+
+The repository deliberately ships with an unconfigured public client ID.
+No App is registered and no credentials are obtained automatically.
+
+1. Register a GitHub App for the intended audience using
+   [GitHub's registration instructions](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
+2. Enable **device flow** and **expiring user access tokens** in the App settings.
+   No backend or client secret is required for the chosen device flow.
+3. For the planned automatic public-repository onboarding, configure repository
+   **Administration: read/write**, **Contents: read/write**, and required metadata
+   access. Administration is ongoing authority, not a create-only permission.
+   When installation access is needed, select only intended repositories;
+   do not silently grant all-repository access.
+4. Replace `null` in [the bundled configuration](public/github-app.json) with the
+   App's **public client ID**. This is not the numeric App ID, a client secret,
+   private key, password, or personal access token. Never put secrets in that file.
+5. Rebuild and reload the extension. Open its connection tab, choose **Connect
+   GitHub**, and use the displayed code at **Open GitHub**. Check the App identity
+   and consent information on GitHub before approving.
+
+The public client ID is maintainer configuration bundled with the extension, not
+something each learner must enter. Missing/invalid configuration produces setup
+guidance without claiming a valid connection.
+
+## GitHub connection behavior
+
+- GitHub handles login/consent. Being logged into its website does not authorize
+  the extension. The extension verifies the user through GitHub's API before
+  displaying a connected identity.
+- The dedicated extension tab owns authorization polling. A background-worker
+  restart does not discard that tab's flow. Closing, reloading, or discarding
+  the connection tab interrupts unfinished authorization.
+- Device-code creation and exchange use Octokit's official
+  `@octokit/oauth-methods` helpers with the GitHub App client type. We use these
+  instead of the higher-level device strategy so waits are abortable and
+  `slow_down` increases remain in effect for subsequent polls.
+- Only an expiring access token is retained in trusted-context-only
+  `chrome.storage.session`. Device codes and refresh tokens are not persisted.
+  No token is placed in local/synchronized storage, webpage/content-script
+  messages, logs, or exports.
+  Credential-bearing communication is confined to privileged extension contexts.
+- API calls omit website cookies, reject redirects, and are limited to the
+  required GitHub authorization and user endpoints. No client secret, App private
+  key, broad OAuth `repo` scope, or general-purpose GitHub proxy is used.
+- Session expiry is checked before credential use and scheduled with an alarm.
+  Browser restart requires reconnection. **Check connection** revalidates the
+  identity and clears rejected/revoked credentials; the displayed verification
+  time is not a promise that a token cannot subsequently be revoked.
+- Cancellation and disconnect invalidate the owning attempt. Late responses
+  cannot restore it. Disconnect clears local credentials, not GitHub-side App
+  authorization or local HDLBits records. Revoke App access separately on GitHub.
+- A connected identity does not establish repository write access. Installation,
+  repository, branch, and effective write-permission checks belong to onboarding.
 
 ## What is recorded
 
@@ -82,13 +142,20 @@ order or infer acceptance from a historical solved badge.
 
 Permissions:
 
-- `storage`: local attempt records, restricted to trusted extension contexts.
+- `storage`: local attempt records and separate session-only GitHub credentials,
+  restricted to trusted extension contexts.
 - `webRequest`: read-only observation of the HDLBits grading request body and
   request lifecycle. No cookie/header inspection, blocking, or traffic changes.
 - `webNavigation`: HDLBits-filtered navigation observations and frame/document
   identity checks. This API permission is broader than the listener filter;
   the extension does not collect browsing history.
-- Host access: only `https://hdlbits.01xz.net/*`. No GitHub or all-sites access.
+- `alarms`: expire the GitHub session without keeping a page open.
+- Host access: HTTPS HDLBits, `github.com`, and `api.github.com` only. GitHub
+  requests originate in privileged extension contexts; there are no GitHub
+  content scripts and no all-sites access.
+
+Basic tab lifecycle events are used only to invalidate the tracked authorization
+owner when its tab closes, reloads, or is discarded; browsing history is not stored.
 
 Page messages cannot select arbitrary operations or retrieve the progress
 store. The result observer does not bridge `window.postMessage` into extension
@@ -125,6 +192,14 @@ block external traffic other than the controlled provider and extension assets.
 Worker lifecycle and time are controlled through browser/runtime interfaces,
 not by mocking internal modules.
 
+GitHub tests use synthetic configuration in isolated copies of the built
+extension and controlled GitHub responses, including worker-owned API requests.
+They never use the host GitHub CLI credential or authorize a real account.
+Coverage includes consent, pending/slowdown, denial, expiry, malformed grants,
+cancellation races, identity checks, cookie omission, token redaction, worker
+recreation, real browser restart, and denied session access from the actual
+HDLBits content-script world.
+
 Coverage includes accepted bytes, post-submit edits and hashes, failed and stale
 results, ambiguous layouts and payloads, historical/forged observations,
 timeouts, cross-tab overlap, page/worker recreation, correction after failure,
@@ -140,8 +215,13 @@ No credentials, GitHub requests, or public repository writes were involved.
 This establishes that observed path, not every HDLBits problem/layout or a
 comprehensive security certification.
 
+No live GitHub authorization or App registration was performed for this slice.
+A live compatibility check requires a configured App and separate user consent.
+
 Relevant platform contracts:
 
 - [Chrome webRequest](https://developer.chrome.com/docs/extensions/reference/api/webRequest)
 - [Chrome webNavigation and event ordering](https://developer.chrome.com/docs/extensions/reference/api/webNavigation)
 - [Chrome storage access levels](https://developer.chrome.com/docs/extensions/reference/api/storage)
+- [GitHub App user tokens and device flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)
+- [Octokit OAuth methods](https://github.com/octokit/oauth-methods.js)

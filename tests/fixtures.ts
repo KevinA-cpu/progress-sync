@@ -1,5 +1,6 @@
 import { test as base, chromium, type BrowserContext, type Page } from '@playwright/test';
 import { resolve } from 'node:path';
+import { cp, writeFile } from 'node:fs/promises';
 
 export const submittedSource = "module top_module(output one);\nassign one = 1'b1;\nendmodule\n";
 export const submittedBytes = "module top_module(output one);\r\nassign one = 1'b1;\r\nendmodule\r\n";
@@ -27,14 +28,18 @@ export const successPage = `<!doctype html>
 <body><h2>step_one &mdash; Compile and simulate</h2><h2>Status: Success!</h2></body></html>`;
 
 interface ExtensionFixtures {
+  githubClientId: string | null;
   extensionContext: BrowserContext;
   progress: Page;
   problem: Page;
 }
 
 export const test = base.extend<ExtensionFixtures>({
-  extensionContext: async ({}, use, testInfo) => {
-    const extensionPath = resolve('.output', 'chrome-mv3');
+  githubClientId: [null, { option: true }],
+  extensionContext: async ({ githubClientId }, use, testInfo) => {
+    const extensionPath = testInfo.outputPath('extension');
+    await cp(resolve('.output', 'chrome-mv3'), extensionPath, { recursive: true });
+    await writeFile(resolve(extensionPath, 'github-app.json'), JSON.stringify({ clientId: githubClientId }));
     const context = await chromium.launchPersistentContext(testInfo.outputPath('profile'), {
       channel: 'chromium',
       headless: true,
