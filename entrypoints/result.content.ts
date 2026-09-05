@@ -1,6 +1,6 @@
 import { browser } from 'wxt/browser';
 import { defineContentScript } from 'wxt/utils/define-content-script';
-import { isObject, type ResultObservation } from '../lib/progress';
+import { progressReplySchema, type ResultObservation } from '../lib/progress';
 
 export default defineContentScript({
   matches: ['https://hdlbits.01xz.net/runsim.php'],
@@ -19,7 +19,8 @@ export default defineContentScript({
           ? 'failure' : 'unknown',
     };
     void browser.runtime.sendMessage(observation).then((reply: unknown) => {
-      if (!isObject(reply) || reply.ok !== true) {
+      const parsed = progressReplySchema.safeParse(reply);
+      if (!parsed.success || !parsed.data.ok) {
         console.warn('Progress Sync: this result was not recorded as an accepted attempt.');
       }
     }, () => {

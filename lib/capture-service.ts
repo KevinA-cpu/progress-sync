@@ -1,7 +1,8 @@
 import { browser, type Browser } from 'wxt/browser';
 import {
-  GRADING_URL, HDL_ORIGIN, MAX_SOURCE_BYTES, PROGRESS_KEY, RESULT_TIMEOUT_MS,
-  hashSource, isObject, isProblemId, isResultObservation, readAttempts,
+  GRADING_URL, HDL_ORIGIN, PROGRESS_KEY, RESULT_TIMEOUT_MS,
+  attemptListSchema, hashSource, problemIdFieldSchema, progressRequestSchema, readAttempts,
+  resultObservationSchema, submittedSourceFieldSchema,
   type Attempt, type ProgressReply, type ResultObservation,
 } from './progress';
 
@@ -55,7 +56,11 @@ export function createCaptureService() {
   }
 
   function save(): Promise<void> {
-    return browser.storage.local.set({ [PROGRESS_KEY]: attempts });
+    const parsed = attemptListSchema.safeParse(attempts);
+    if (!parsed.success) {
+      throw new Error('Local progress could not be saved because the attempt record is invalid.');
+    }
+    return browser.storage.local.set({ [PROGRESS_KEY]: parsed.data });
   }
 
   function unverify(operation: Operation, reason: string, ambiguous = true): void {
@@ -124,14 +129,10 @@ export function createCaptureService() {
         return;
       }
       const form = details.requestBody?.formData;
-      const rawSource = form?.vlgcode_box;
-      const rawProblem = form?.tc;
-      const source = rawSource?.length === 1 && typeof rawSource[0] === 'string'
-        && rawSource[0].length > 0
-        && new TextEncoder().encode(rawSource[0]).length <= MAX_SOURCE_BYTES
-        ? rawSource[0] : null;
-      const problemId = rawProblem?.length === 1 && isProblemId(rawProblem[0])
-        ? rawProblem[0] : null;
+      const parsedSource = submittedSourceFieldSchema.safeParse(form?.vlgcode_box);
+      const parsedProblem = problemIdFieldSchema.safeParse(form?.tc);
+      const source = parsedSource.success ? parsedSource.data[0] : null;
+      const problemId = parsedProblem.success ? parsedProblem.data[0] : null;
       const parentDocumentId = details.parentDocumentId ?? null;
       const attempt: Attempt = {
         schemaVersion: 1, id: crypto.randomUUID(), provider: 'hdlbits',
@@ -240,12 +241,13 @@ export function createCaptureService() {
       await expire();
       if (sender.id === browser.runtime.id
         && sender.url === browser.runtime.getURL('/options.html')
-        && isObject(value) && Object.keys(value).length === 1 && value.type === 'progress:list') {
+        && progressRequestSchema.safeParse(value).success) {
         return { ok: true, attempts };
       }
+      const parsed = resultObservationSchema.safeParse(value);
       if (sender.id !== browser.runtime.id || sender.url !== GRADING_URL
         || !sender.documentId || sender.tab?.id === undefined || !sender.frameId
-        || !isResultObservation(value)) {
+        || !parsed.success) {
         console.warn('Progress Sync rejected an unsupported message or sender.');
         return { ok: false, error: 'Unsupported message or sender.' };
       }
@@ -260,7 +262,7 @@ export function createCaptureService() {
         unverify(operation, 'Multiple result documents made this attempt ambiguous.');
         await save();
       } else {
-        operation.result = { documentId: sender.documentId, observation: value };
+        operation.result = { documentId: sender.documentId, observation: parsed.data };
         await finish(operation);
       }
       return { ok: true, attempts: [] };

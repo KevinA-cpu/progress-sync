@@ -1,5 +1,5 @@
 import { browser } from 'wxt/browser';
-import { PROGRESS_KEY, isAttemptList, isObject, type Attempt } from '../../lib/progress';
+import { PROGRESS_KEY, progressReplySchema, type Attempt } from '../../lib/progress';
 import './style.css';
 
 const status = document.querySelector<HTMLParagraphElement>('#status');
@@ -46,11 +46,12 @@ function renderAttempt(attempt: Attempt): HTMLElement {
 async function load(): Promise<void> {
   if (!status || !attempts) throw new Error('Progress interface is incomplete.');
   try {
-    const reply: unknown = await browser.runtime.sendMessage({ type: 'progress:list' });
-    if (!isObject(reply) || reply.ok !== true || !isAttemptList(reply.attempts)) {
-      throw new Error(isObject(reply) && typeof reply.error === 'string'
-        ? reply.error : 'Local progress could not be read.');
-    }
+    const parsed = progressReplySchema.safeParse(
+      await browser.runtime.sendMessage({ type: 'progress:list' }),
+    );
+    if (!parsed.success) throw new Error('Local progress could not be read.');
+    const reply = parsed.data;
+    if (!reply.ok) throw new Error(reply.error);
     attempts.replaceChildren(...[...reply.attempts].reverse().map(renderAttempt));
     status.textContent = reply.attempts.length === 0
       ? 'No captured attempts yet. Submit using the in-page HDLBits editor.'

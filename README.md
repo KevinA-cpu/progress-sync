@@ -57,6 +57,17 @@ not sent anywhere by the extension. Local storage is not an encrypted vault;
 clearing extension data, uninstalling, or losing the device can lose these
 records. Keep independent backups.
 
+Runtime data contracts use strict Zod schemas, with TypeScript types inferred
+from those schemas rather than maintained separately. Submitted fields, runtime
+requests/replies, and persisted records are validated without coercion or source
+transformations. Accepted records must include the source, hash, observation
+timestamp, and parent/result document provenance. Invalid stored records are
+reported explicitly, not silently stripped, reset, or overwritten.
+
+Zod's JIT compilation is disabled to respect Manifest V3's content security
+policy without permitting `eval`. Schema validation checks data structure;
+the browser request/document checks below still establish result correlation.
+
 ## Correlation and permissions
 
 HDLBits posts the editor contents to its grading endpoint and navigates a result
@@ -116,7 +127,9 @@ not by mocking internal modules.
 
 Coverage includes accepted bytes, post-submit edits and hashes, failed and stale
 results, ambiguous layouts and payloads, historical/forged observations,
-timeouts, cross-tab overlap, page/worker recreation, and correction after failure.
+timeouts, cross-tab overlap, page/worker recreation, correction after failure,
+strict saved-data validation, runtime sender/operation checks, and CSP-safe
+schema initialization.
 
 A separate live guest check on 2026-09-05 used original constant-output Verilog
 on HDLBits `step_one` with the built extension in Chromium 153.0.8010.12. Editing
