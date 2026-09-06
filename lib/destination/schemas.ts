@@ -45,6 +45,7 @@ export const journalSchema = z.strictObject({
   phase: z.enum(DESTINATION_PHASE),
   initializationAuthorized: z.boolean(),
   branch: branchNameSchema.nullable(), verifiedAt: z.iso.datetime().nullable(),
+  selectedAt: z.iso.datetime().optional(),
   connectionId: z.uuid(), commitSha: z.string().nullable(),
 });
 export type DestinationJournal = z.infer<typeof journalSchema>;
@@ -86,4 +87,3 @@ export const destinationReplySchema = z.discriminatedUnion('ok', [
   z.strictObject({ ok: z.literal(false), error: destinationIssueSchema }),
 ]);
 export type DestinationReply = z.infer<typeof destinationReplySchema>;
-export const httpStatusSchema = z.object({ status: z.number() });

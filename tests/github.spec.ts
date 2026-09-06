@@ -258,11 +258,23 @@ test('the real HDLBits content-script context cannot read session credentials or
         try { await chrome.storage.session.get(null); }
         catch (error) { storageBlocked = String(error.message).includes('Access to storage is not allowed'); }
       }
-      return { storageBlocked, stateDenied: reply.ok === false && reply.error === 'not-allowed' };
+      const delivery = await chrome.runtime.sendMessage({ type: 'delivery:list' });
+      const publication = await chrome.runtime.sendMessage({
+        type: 'delivery:publish', attemptId: '11111111-1111-4111-8111-111111111111',
+        expectedConnectionId: '11111111-1111-4111-8111-111111111111',
+        expectedSelectionId: '11111111-1111-4111-8111-111111111111', publicConfirmed: true
+      });
+      return {
+        storageBlocked, stateDenied: reply.ok === false && reply.error === 'not-allowed',
+        deliveryDenied: delivery.ok === false && delivery.error === 'Unsupported delivery operation or sender.',
+        publicationDenied: publication.ok === false && publication.error === 'Unsupported delivery operation or sender.'
+      };
     })()`,
   });
   expect(result.exceptionDetails).toBeUndefined();
-  expect(result.result.value).toEqual({ storageBlocked: true, stateDenied: true });
+  expect(result.result.value).toEqual({
+    storageBlocked: true, stateDenied: true, deliveryDenied: true, publicationDenied: true,
+  });
   await session.detach();
 });
 

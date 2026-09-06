@@ -145,7 +145,7 @@ for (const scenario of [
   { name: 'missing Administration authority', change: { administrationWrite: false }, message: 'permission is missing or denied' },
   { name: 'an installation of another App', change: { installationClientId: 'Iv1.some-other-app' }, message: 'Install this GitHub App' },
   { name: 'a suspended installation', change: { suspended: true }, message: 'Install this GitHub App' },
-  { name: 'a denied creation request', change: { creationDenied: true }, message: 'permission is missing or denied' },
+  { name: 'a denied creation request', change: { creationDenied: true }, message: 'GitHub rejected repository creation.' },
 ]) {
   test(`new onboarding rejects ${scenario.name}`, async ({ extensionContext, progress }) => {
     const { server, destination } = await startSetup(extensionContext, progress);
@@ -324,4 +324,38 @@ test('discarding unresolved setup is explicit and never deletes the GitHub repos
   await expect(destination.getByText('No destination selected.', { exact: true })).toBeVisible();
   expect(server.exists).toBe(true);
   expect(server.creations).toBe(1);
+});
+
+test('a creation validation rejection is not assumed to prove a name collision', async ({
+  extensionContext, progress,
+}) => {
+  const { server, destination } = await startSetup(extensionContext, progress);
+  await extensionContext.route('https://api.github.com/user/repos', route =>
+    route.fulfill({ status: 422, json: { message: 'SYNTHETIC_VALIDATION_FAILURE' } }));
+  await destination.getByLabel('I understand this repository will be public').check();
+  await destination.getByRole('button', { name: 'Create public repository', exact: true }).click();
+  await expect(destination.getByRole('status')).toContainText('GitHub rejected repository creation.');
+  expect(server.exists).toBe(false);
+  await destination.reload();
+  await expect(destination.getByText('No destination selected.', { exact: true })).toBeVisible();
+});
+
+test('an explicit initialization rate limit allows an intentional retry after the limit is cleared', async ({
+  extensionContext, progress,
+}) => {
+  const { server, destination } = await startSetup(extensionContext, progress);
+  let limited = true;
+  await extensionContext.route('https://api.github.com/repos/fixture-user/progress-solutions/contents/.progress-sync.json',
+    route => limited && route.request().method() === 'PUT'
+      ? route.fulfill({ status: 429, json: { message: 'Rate limit exceeded' } })
+      : route.fallback());
+  await destination.getByLabel('I understand this repository will be public').check();
+  await destination.getByRole('button', { name: 'Create public repository', exact: true }).click();
+  await expect(destination.getByRole('status')).toContainText('Initialization was rejected.');
+  expect(server.initializations).toBe(0);
+  limited = false;
+  await destination.getByRole('button', { name: 'Verify pending or saved repository' }).click();
+  await expect(destination.getByRole('status')).toContainText('Verified destination:');
+  expect(server.creations).toBe(1);
+  expect(server.initializations).toBe(1);
 });
