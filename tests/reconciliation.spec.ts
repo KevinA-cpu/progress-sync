@@ -1,30 +1,12 @@
 import { expect, stopExtensionWorker, submittedBytes, submittedSource, test } from './fixtures';
-import { CLIENT_ID, githubFixture, openConnection } from './github-fixture';
-import { destinationFixture } from './destination-fixture';
-import { publicationFixture } from './publication-fixture';
-import type { BrowserContext, Page } from '@playwright/test';
+import { CLIENT_ID } from './github-fixture';
+import { setup } from './publication-setup';
+import type { Page } from '@playwright/test';
 import type { Browser } from 'wxt/browser';
 
 declare const chrome: typeof Browser;
 
 test.use({ githubClientId: CLIENT_ID });
-
-async function setup(context: BrowserContext, progress: Page) {
-  await githubFixture(context);
-  const target = await destinationFixture(context);
-  const server = await publicationFixture(context, target);
-  const connection = await openConnection(context, progress);
-  await connection.getByRole('button', { name: 'Connect GitHub', exact: true }).click();
-  await expect(connection.getByRole('status')).toHaveText('Connected as fixture-user');
-  const [destination] = await Promise.all([
-    context.waitForEvent('page'),
-    connection.getByRole('link', { name: 'Set up progress repository' }).click(),
-  ]);
-  await destination.getByLabel('I understand this repository will be public').check();
-  await destination.getByRole('button', { name: 'Create public repository', exact: true }).click();
-  await expect(destination.getByRole('status')).toHaveText('Verified destination: fixture-user/progress-solutions @ learning');
-  return { server, target, connection, destination };
-}
 
 test('retry recovers the original complete commit after its reference response is lost', async ({
   extensionContext, progress, problem,
@@ -226,8 +208,21 @@ for (const change of ['missing metadata', 'different metadata', 'different sourc
     const source = [...server.files.keys()].find(path => path.endsWith('/solution.v'));
     const metadata = [...server.files.keys()].find(path => path.endsWith('/acceptance.json'));
     if (!source || !metadata) throw new Error('Expected the complete remote pair.');
-    const head = server.commitFiles(change === 'different source' ? { [source]: 'Newer learner work\n' }
-      : { [metadata]: change === 'missing metadata' ? null : '{"schemaVersion":2}\n' });
+    const changes: Record<string, string | null> = {};
+    switch (change) {
+      case 'different source':
+        changes[source] = 'Newer learner work\n';
+        break;
+      case 'missing metadata':
+        changes[metadata] = null;
+        break;
+      case 'different metadata':
+        changes[metadata] = '{"schemaVersion":2}\n';
+        break;
+      default:
+        throw new Error('Unsupported inconsistency scenario.');
+    }
+    const head = server.commitFiles(changes);
     const files = new Map(server.files);
     const writes = server.writes.length;
     await progress.getByRole('button', { name: 'Check GitHub and retry delivery', exact: true }).click();
@@ -301,7 +296,7 @@ test('repeated reconciliation read failures remain visible and retain the same j
 test('a renewed same-account session can retry without changing the original destination binding', async ({
   extensionContext, progress, problem,
 }) => {
-  const { server, connection, destination } = await setup(extensionContext, progress);
+  const { server, connection, page } = await setup(extensionContext, progress);
   server.loseBeforeAt = 'ref';
   await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
@@ -311,9 +306,9 @@ test('a renewed same-account session can retry without changing the original des
   await expect(connection.getByRole('status')).toHaveText('Not connected to GitHub.');
   await connection.getByRole('button', { name: 'Connect GitHub', exact: true }).click();
   await expect(connection.getByRole('status')).toHaveText('Connected as fixture-user');
-  await destination.getByRole('button', { name: 'Refresh installations' }).click();
-  await destination.getByRole('button', { name: 'Verify pending or saved repository' }).click();
-  await expect(destination.getByRole('status')).toContainText('Verified destination:');
+  await page.getByRole('button', { name: 'Refresh installations' }).click();
+  await page.getByRole('button', { name: 'Verify pending or saved repository' }).click();
+  await expect(page.getByRole('status')).toContainText('Verified destination:');
   server.loseBeforeAt = null;
   await progress.getByRole('button', { name: 'Check GitHub and retry delivery', exact: true }).click();
   await expect(progress.getByRole('region', { name: 'Captured attempts' }).getByText('Saved to GitHub', { exact: true })).toBeVisible();
@@ -352,15 +347,15 @@ test('an unavailable prepared-checkpoint write prevents any reference update', a
 test('retry cannot redirect a retained job to a different selected branch', async ({
   extensionContext, progress, problem,
 }) => {
-  const { server, target, destination } = await setup(extensionContext, progress);
+  const { server, target, page } = await setup(extensionContext, progress);
   server.loseBeforeAt = 'ref';
   await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(progress.getByText('Publication outcome is uncertain.', { exact: false })).toBeVisible();
   const original = (await progress.evaluate(() => chrome.runtime.sendMessage({ type: 'delivery:list' }))).jobs[0].target;
   target.defaultBranch = 'different-branch';
-  await destination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
-  await expect(destination.getByRole('status')).toContainText('@ different-branch');
+  await page.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('@ different-branch');
   const writes = server.writes.length;
   await progress.getByRole('button', { name: 'Check GitHub and retry delivery', exact: true }).click();
   await expect(progress.getByText('Delivery blocked: The account or selected destination changed.', { exact: false })).toBeVisible();

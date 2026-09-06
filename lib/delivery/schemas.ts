@@ -5,13 +5,13 @@ import {
 import { CAPTURE_PROVENANCE, CAPTURE_STATE, GRADING_VERDICT, PROGRESS_PROVIDER } from '../constants/progress';
 import { attemptSchema, problemIdSchema, submittedSourceSchema } from '../progress';
 import { destinationTargetSchema } from '../destination/schemas';
-import { GITHUB_COMPARISON, GITHUB_CONTENT, GITHUB_PAGINATION } from '../constants/github';
+import { GITHUB_COMPARISON, GITHUB_CONTENT, GITHUB_PAGINATION, githubBase64CharacterLimit } from '../constants/github';
 
 export const gitShaSchema = z.string().regex(/^[a-f0-9]{40}$/);
 export const gitObjectSchema = z.object({ sha: gitShaSchema });
 export const metadataBlobSchema = z.object({
   sha: gitShaSchema, size: z.int().nonnegative().max(MAX_METADATA_BYTES), encoding: z.literal(GITHUB_CONTENT.base64),
-  content: z.string().max(8 * Math.ceil(MAX_METADATA_BYTES / 3)),
+  content: z.string().max(githubBase64CharacterLimit(MAX_METADATA_BYTES)),
 });
 export const sourceHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const acceptedSnapshotSchema = attemptSchema.safeExtend({

@@ -1,3 +1,6 @@
+import { MAX_SOURCE_BYTES } from './progress';
+import { githubBase64CharacterLimit } from './github';
+
 export const RECOVERY_STORAGE_PREFIX = 'recovery-v1:';
 export const RECOVERY_DATABASE = 'progress-sync-recovery';
 export const RECOVERY_DATABASE_VERSION = 1;
@@ -8,8 +11,7 @@ export const RECOVERY_MESSAGE = { list: 'recovery:list', refresh: 'recovery:refr
 export const RECOVERY_STATUS = { loading: 'loading', ready: 'ready', failed: 'failed' } as const;
 export const RECOVERY_ENTRY = { recorded: 'recorded', unverified: 'unverified' } as const;
 export const MAX_REMOTE_PATH_LENGTH = 4096;
-// Allow base64 line wrapping without relaxing the decoded source byte limit.
-export const MAX_ENCODED_BLOB_CHARACTERS = 8 * Math.ceil(MAX_SOURCE_BYTES / 3);
+export const MAX_ENCODED_BLOB_CHARACTERS = githubBase64CharacterLimit(MAX_SOURCE_BYTES);
 export const RECOVERY_ISSUE = {
   metadataMissing: 'metadata-missing', metadataInvalid: 'metadata-invalid', sourceMissing: 'source-missing',
   sourceInvalid: 'source-invalid', identityMismatch: 'identity-mismatch', hashMismatch: 'hash-mismatch',
@@ -44,4 +46,3 @@ export const RECOVERY_TEXT = {
   snapshot: (sha: string) => `Repository snapshot ${sha}`,
   readAt: (timestamp: string) => `Recovered at ${timestamp}`,
 } as const;
-import { MAX_SOURCE_BYTES } from './progress';
