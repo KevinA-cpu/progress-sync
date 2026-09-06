@@ -2,13 +2,14 @@
 
 Progress Sync records exact HDLBits submissions locally, supports GitHub App
 device authorization, creates or connects a verified public progress repository,
-and publishes accepted solutions with their progress metadata atomically.
+publishes accepted solutions with their progress metadata atomically, and
+restores saved progress in another browser.
 These slices implement [ticket #2](https://github.com/KevinA-cpu/progress-sync/issues/2),
 [ticket #3](https://github.com/KevinA-cpu/progress-sync/issues/3),
-[ticket #4](https://github.com/KevinA-cpu/progress-sync/issues/4), and
-[ticket #5](https://github.com/KevinA-cpu/progress-sync/issues/5).
-**Automatic retries, uncertain-write reconciliation, and cross-browser recovery
-are not implemented yet.**
+[ticket #4](https://github.com/KevinA-cpu/progress-sync/issues/4),
+[ticket #5](https://github.com/KevinA-cpu/progress-sync/issues/5), and
+[ticket #6](https://github.com/KevinA-cpu/progress-sync/issues/6).
+**Automatic retries and uncertain-write reconciliation are not implemented yet.**
 
 HDLBits login is not required. The extension's progress is separate from HDLBits'
 official completion state.
@@ -32,6 +33,7 @@ pnpm test -- capture.spec.ts -g "editing while grading"
 pnpm test -- github.spec.ts
 pnpm test -- destination.spec.ts
 pnpm test -- publication.spec.ts
+pnpm test -- recovery.spec.ts
 ```
 
 After a build, tests can be rerun without rebuilding:
@@ -77,6 +79,8 @@ Runtime strings are grouped by domain under [lib/constants](lib/constants):
   operation phases, setup message/error codes, and destination messages.
 - [Delivery constants](lib/constants/delivery.ts): job states, publication paths,
   constrained messages, and delivery diagnostics.
+- [Recovery constants](lib/constants/recovery.ts): read-only recovery messages,
+  cache states, file limits, and stable warning codes.
 
 Zod schemas and runtime switches consume the same literal-valued constant
 objects. Existing wire values, storage keys, and UI messages are unchanged.
@@ -289,7 +293,59 @@ automatically retried or called successful, even if GitHub may have applied the
 update. Worker/browser restart does not erase these jobs. Creating Git objects
 can leave unreferenced objects if a later step fails; only the final branch update
 makes the complete commit visible on the selected branch. Repair/reconciliation,
-retry scheduling, and remote restoration are later tickets.
+and retry scheduling are later tickets.
+
+## Recover saved progress
+
+In a fresh browser, connect GitHub and explicitly choose **Connect existing
+repository** for the same public Progress Sync repository and branch. Successful
+connection or verification starts a read-only recovery. The progress tab also
+provides **Refresh saved progress**.
+
+Recovery pins a verified branch commit and reads its Git tree and blobs. It
+validates the supported acceptance schema, provider/problem/attempt path
+association, provenance, timestamps, and exact UTF-8 source SHA-256 before
+showing recorded acceptance. A recursive tree response that is truncated is not
+treated as complete: recovery reads the non-recursive subtrees instead. Git tree
+responses use subtree traversal rather than numbered pagination; installation
+and repository-access lists still use their paginated APIs. An incomplete or
+failed scan is reported, not silently published as a complete recovery.
+
+Existing Verilog files without valid acceptance metadata are **unverified**.
+Malformed or unsupported metadata, missing source, invalid encoding, and source
+hash mismatches also produce warnings instead of accepted progress. Imported
+source and metadata are never executed, and remote fields cannot select another
+account, repository, branch, URL, or privileged operation.
+
+Recovered progress is displayed separately from locally captured submissions.
+Its snapshot link identifies the commit that was read, not necessarily the
+original publication commit. Recovery never changes the current HDLBits editor
+or native completion state, writes remote content, creates duplicate uploads, or
+converts an uncertain local delivery job into a confirmed receipt.
+
+These records are extension-observed provenance, **not signed grading
+certificates**. Repository owners can edit source and metadata. GitHub cannot
+recover unsaved guest history or another device's undelivered local jobs.
+
+The recovery cache uses extension-origin IndexedDB through `idb`, not Chrome's
+10 MB `storage.local` area. The worker and trusted progress page read it locally;
+complete archives are not sent through size-limited runtime messages. No extra
+storage permission is requested. Available browser disk/memory still applies;
+a storage failure is reported rather than silently dropping records.
+
+The cache is scoped to the account, App installation, repository ID, and branch.
+A failed refresh retains a previous complete snapshot only with
+an explicit stale-cache notice. Worker interruption is reported and can be
+retried with **Refresh saved progress**. A stale or superseded request cannot
+replace a newer selection's snapshot. Invalid cached data is reported rather than
+shown as a successful recovery; local captured attempts and delivery jobs remain
+separate.
+
+Source files retain the existing 256 KiB byte limit; acceptance metadata is
+limited to 16 KiB per file. Oversized or unsupported files are unverified, not
+silently truncated. Base64 line wrapping is supported and UTF-8 decoding preserves
+a source byte-order mark. These are file-validation limits, not a cap on the
+number of saved attempts scanned from the repository.
 
 ## What is recorded
 
@@ -305,12 +361,17 @@ published only to an intentionally selected public destination. Local storage is
 clearing extension data, uninstalling, or losing the device can lose these
 records. Keep independent backups.
 
-Runtime data contracts use strict Zod schemas, with TypeScript types inferred
+Extension-owned data contracts use strict Zod schemas, with TypeScript types inferred
 from those schemas rather than maintained separately. Submitted fields, runtime
 requests/replies, and persisted records are validated without coercion or source
 transformations. Accepted records must include the source, hash, observation
 timestamp, and parent/result document provenance. Invalid stored records are
 reported explicitly, not silently stripped, reset, or overwritten.
+
+GitHub transport-response schemas validate the fields consumed by the extension
+and allow additional GitHub fields, matching the SDK's extensible responses.
+This does not apply to acceptance metadata, extension messages, or saved records:
+those remain strict and reject unknown fields.
 
 Zod's JIT compilation is disabled to respect Manifest V3's content security
 policy without permitting `eval`. Schema validation checks data structure;
@@ -370,7 +431,8 @@ grading certificate: a compromised provider or browser is outside this proof.
 - A result that takes more than two minutes is unverified. Worker suspension
   during an unfinished observation also makes it unverified; late success cannot
   promote it afterward. Accepted records survive page reload and worker restart.
-- Existing files and previous guest history are not imported or reconstructed.
+- Existing source without valid acceptance metadata can only be shown as
+  unverified. Unsaved guest history cannot be reconstructed.
 
 ## Validation
 
@@ -398,6 +460,10 @@ session-bound consent. They create no real repository or GitHub content.
 Publication tests extend that boundary with immutable Git trees/commits and a
 non-force branch update. They run real onboarding, capture, and publication and
 check exact remote files together with the visible receipt or failure state.
+
+Recovery tests close the original browser and launch a fresh profile without
+copying local storage or credentials. They reconnect through the real extension
+and controlled GitHub boundary, retaining only the remote repository state.
 
 Coverage includes accepted bytes, post-submit edits and hashes, failed and stale
 results, ambiguous layouts and payloads, historical/forged observations,

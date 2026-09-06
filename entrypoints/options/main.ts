@@ -5,7 +5,10 @@ import { progressReplySchema, type Attempt } from '../../lib/progress';
 import { DELIVERY_KEY, DELIVERY_MESSAGE, DELIVERY_STATE, DELIVERY_TEXT, deliveryCommitUrl } from '../../lib/constants/delivery';
 import { AUTH_SESSION_KEY } from '../../lib/constants/github';
 import { DESTINATION_STORAGE_PREFIX } from '../../lib/constants/destination';
-import { deliveryReplySchema, type DeliveryJob, type DeliveryTarget } from '../../lib/delivery/schemas';
+import { deliveryReplySchema, type DeliveryJob } from '../../lib/delivery/schemas';
+import type { DestinationTarget } from '../../lib/destination/schemas';
+import { initializeRecovery } from './recovery';
+import { renderMetadata, renderSource } from './fields';
 import './style.css';
 
 const status = document.querySelector<HTMLParagraphElement>('#status');
@@ -13,7 +16,7 @@ const attempts = document.querySelector<HTMLElement>('#attempts');
 const refresh = document.querySelector<HTMLButtonElement>('#refresh');
 if (!status || !attempts || !refresh) throw new Error(PROGRESS_TEXT.interfaceIncomplete);
 
-function renderAttempt(attempt: Attempt, selection: DeliveryTarget | null, job?: DeliveryJob): HTMLElement {
+function renderAttempt(attempt: Attempt, selection: DestinationTarget | null, job?: DeliveryJob): HTMLElement {
   const article = document.createElement('article');
   const heading = document.createElement('h2');
   heading.textContent = PROGRESS_TEXT.problemHeading(attempt.problemId);
@@ -37,7 +40,6 @@ function renderAttempt(attempt: Attempt, selection: DeliveryTarget | null, job?:
         break;
     }
   }
-  const metadata = document.createElement('dl');
   const values = {
     [PROGRESS_TEXT.attemptLabel]: attempt.id,
     [PROGRESS_TEXT.submittedLabel]: attempt.submittedAt,
@@ -45,14 +47,7 @@ function renderAttempt(attempt: Attempt, selection: DeliveryTarget | null, job?:
     [PROGRESS_TEXT.hashLabel]: attempt.sourceHash ?? PROGRESS_TEXT.unavailable,
     [PROGRESS_TEXT.captureLabel]: PROGRESS_TEXT.captureDescription,
   };
-  for (const [label, value] of Object.entries(values)) {
-    const term = document.createElement('dt');
-    const description = document.createElement('dd');
-    term.textContent = label;
-    description.textContent = value;
-    metadata.append(term, description);
-  }
-  article.append(heading, state, metadata);
+  article.append(heading, state, renderMetadata(values));
   if (job) {
     const destination = document.createElement('p');
     destination.textContent = DELIVERY_TEXT.target(job.target.owner, job.target.name, job.target.branch);
@@ -67,14 +62,7 @@ function renderAttempt(attempt: Attempt, selection: DeliveryTarget | null, job?:
     }
   }
   if (attempt.source !== null) {
-    const label = document.createElement('label');
-    label.textContent = PROGRESS_TEXT.submittedSource;
-    const source = document.createElement('textarea');
-    source.readOnly = true;
-    source.value = attempt.source;
-    source.rows = Math.min(18, Math.max(4, attempt.source.split('\n').length));
-    label.append(source);
-    article.append(label);
+    article.append(renderSource(PROGRESS_TEXT.submittedSource, attempt.source));
   }
   if (attempt.state === CAPTURE_STATE.accepted && !job) {
     if (selection) {
@@ -139,3 +127,4 @@ browser.storage.onChanged.addListener((changes, area) => {
     || (area === STORAGE_AREA.session && AUTH_SESSION_KEY in changes)) void load();
 });
 void load();
+initializeRecovery();

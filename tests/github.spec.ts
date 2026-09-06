@@ -264,16 +264,24 @@ test('the real HDLBits content-script context cannot read session credentials or
         expectedConnectionId: '11111111-1111-4111-8111-111111111111',
         expectedSelectionId: '11111111-1111-4111-8111-111111111111', publicConfirmed: true
       });
+      const recovery = await chrome.runtime.sendMessage({ type: 'recovery:list' });
+      const refresh = await chrome.runtime.sendMessage({
+        type: 'recovery:refresh', expectedConnectionId: '11111111-1111-4111-8111-111111111111',
+        expectedSelectionId: '11111111-1111-4111-8111-111111111111'
+      });
       return {
         storageBlocked, stateDenied: reply.ok === false && reply.error === 'not-allowed',
         deliveryDenied: delivery.ok === false && delivery.error === 'Unsupported delivery operation or sender.',
-        publicationDenied: publication.ok === false && publication.error === 'Unsupported delivery operation or sender.'
+        publicationDenied: publication.ok === false && publication.error === 'Unsupported delivery operation or sender.',
+        recoveryDenied: recovery.ok === false && recovery.error === 'Unsupported recovery operation or sender.',
+        refreshDenied: refresh.ok === false && refresh.error === 'Unsupported recovery operation or sender.'
       };
     })()`,
   });
   expect(result.exceptionDetails).toBeUndefined();
   expect(result.result.value).toEqual({
     storageBlocked: true, stateDenied: true, deliveryDenied: true, publicationDenied: true,
+    recoveryDenied: true, refreshDenied: true,
   });
   await session.detach();
 });

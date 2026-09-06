@@ -16,6 +16,17 @@
       <button id="refresh" type="button">Refresh progress</button>
       <p id="status" role="status">Loading local progress...</p>
       <section id="attempts" aria-label="Captured attempts"></section>
+      <section aria-label="Saved progress from GitHub">
+        <h2>Saved progress from GitHub</h2>
+        <p>Recorded acceptance belongs to the saved source snapshot, not your current editor contents
+          or HDLBits' current native completion state.</p>
+        <p>These are extension observations, not signed grading certificates. Repository owners can edit records.
+          Unsaved guest history and another device's undelivered local jobs cannot be recovered from GitHub.</p>
+        <button id="refresh-recovery" type="button" disabled>Refresh saved progress</button>
+        <p id="recovery-status" aria-live="polite">Loading saved-progress state...</p>
+        <div id="recovery-origin"></div>
+        <div id="recovered-entries"></div>
+      </section>
     </main>
   </body>
 </html>

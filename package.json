@@ -26,6 +26,7 @@
     "@octokit/plugin-rest-endpoint-methods": "^18.0.0",
     "@octokit/request": "^10.0.16",
     "@octokit/request-error": "^7.1.2",
+    "idb": "^8.0.3",
     "zod": "^4.5.4"
   }
 }

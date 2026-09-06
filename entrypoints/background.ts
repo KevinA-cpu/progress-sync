@@ -1,5 +1,5 @@
 import { RESOURCE_TYPE, TAB_STATUS, WEB_REQUEST_OPTION } from '../lib/constants/browser';
-import { DESTINATION_ISSUE, DESTINATION_MESSAGE_PREFIX, DESTINATION_TEXT } from '../lib/constants/destination';
+import { DESTINATION_ISSUE, DESTINATION_MESSAGE, DESTINATION_MESSAGE_PREFIX, DESTINATION_TEXT } from '../lib/constants/destination';
 import { AUTH_ISSUE, AUTH_MESSAGE_PREFIX, AUTH_TEXT } from '../lib/constants/github';
 import { GRADING_URL, HDL_HOST, PROGRESS_TEXT } from '../lib/constants/progress';
 import { browser } from 'wxt/browser';
@@ -14,6 +14,9 @@ import { createDeliveryService } from '../lib/delivery/service';
 import { type DeliveryReply } from '../lib/delivery/schemas';
 import { DELIVERY_MESSAGE_PREFIX, DELIVERY_TEXT } from '../lib/constants/delivery';
 import { z } from '../lib/schema';
+import { createRecoveryService } from '../lib/recovery/service';
+import { type RecoveryReply } from '../lib/recovery/schemas';
+import { RECOVERY_MESSAGE_PREFIX, RECOVERY_TEXT } from '../lib/constants/recovery';
 
 const messageEnvelopeSchema = z.object({ type: z.string() });
 
@@ -21,6 +24,7 @@ export default defineBackground(() => {
   const github = createGithubService();
   const destination = createDestinationService(github);
   const delivery = createDeliveryService(github, destination);
+  const recovery = createRecoveryService(github, destination);
   const capture = createCaptureService(delivery.accepted);
   const requests = { urls: [GRADING_URL], types: [RESOURCE_TYPE.mainFrame, RESOURCE_TYPE.subFrame] as const };
   const filter = { urls: requests.urls, types: [...requests.types] };
@@ -33,8 +37,16 @@ export default defineBackground(() => {
   });
   browser.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
     const envelope = messageEnvelopeSchema.safeParse(message);
-    const namespace = envelope.success ? envelope.data.type.slice(0, envelope.data.type.indexOf(':') + 1) : null;
+    const messageType = envelope.success ? envelope.data.type : null;
+    const namespace = messageType?.slice(0, messageType.indexOf(':') + 1);
     switch (namespace) {
+      case RECOVERY_MESSAGE_PREFIX:
+        void recovery.message(message, sender).then(sendResponse, () => {
+          console.warn(RECOVERY_TEXT.operationFailed);
+          const reply: RecoveryReply = { ok: false, error: RECOVERY_TEXT.readFailed };
+          sendResponse(reply);
+        });
+        return true;
       case DELIVERY_MESSAGE_PREFIX:
         void delivery.message(message, sender).then(sendResponse, () => {
           console.error(DELIVERY_TEXT.operationFailed);
@@ -43,7 +55,10 @@ export default defineBackground(() => {
         });
         return true;
       case DESTINATION_MESSAGE_PREFIX:
-        void destination.message(message, sender).then(sendResponse, () => {
+        void destination.message(message, sender).then(reply => {
+          sendResponse(reply);
+          if (reply.ok && reply.view.verified && messageType !== DESTINATION_MESSAGE.create) void recovery.selected();
+        }, () => {
           console.error(DESTINATION_TEXT.operationFailed);
           const reply: DestinationReply = { ok: false, error: DESTINATION_ISSUE.networkError };
           sendResponse(reply);

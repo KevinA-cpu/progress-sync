@@ -3,11 +3,8 @@ import {
   DELIVERY_TEXT, GIT_BLOB_HASH_ALGORITHM, GIT_MODE, GIT_OBJECT, GIT_RECURSIVE,
   deliveryPaths, deliveryRef, deliveryRoot,
 } from '../constants/delivery';
-import { GITHUB_PERMISSION } from '../constants/github';
 import { GRADING_VERDICT } from '../constants/progress';
 import { destinationApi } from '../destination/api';
-import { DESTINATION_ISSUE } from '../constants/destination';
-import { DestinationFault } from '../destination/schemas';
 import { githubRest } from '../github/rest';
 import { githubWrite } from '../github/errors';
 import type { ConnectedSession } from '../github/schemas';
@@ -38,19 +35,7 @@ export async function publishAttempt(
     await guard();
     return parseDelivery(response.data, schema);
   }
-  await destination.identity();
-  const installation = (await destination.installations()).find(item =>
-    item.id === target.installationId && item.app_id === target.appId);
-  if (!installation || installation.permissions.contents !== GITHUB_PERMISSION.write) {
-    throw new DestinationFault(DESTINATION_ISSUE.permissionDenied);
-  }
-  const repository = await destination.repository(target.name);
-  if (repository.id !== target.repositoryId) throw new DeliveryFault(DELIVERY_TEXT.sessionChanged);
-  await destination.included(target.installationId, target.repositoryId);
-  const branch = await destination.branch(target.name, target.branch);
-  if (!await destination.marker(target.name, branch.commit.sha)) {
-    throw new DestinationFault(DESTINATION_ISSUE.incompatibleRepository);
-  }
+  const branch = await destination.verify(target);
   const base = await validatedCall(() => octokit.rest.git.getCommit({ ...repo, commit_sha: branch.commit.sha }), gitCommitSchema);
   if (base.sha !== branch.commit.sha) throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
   const tree = await validatedCall(() => octokit.rest.git.getTree({
