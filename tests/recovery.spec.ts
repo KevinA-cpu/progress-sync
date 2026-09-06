@@ -383,12 +383,28 @@ test('invalid cached recovery data is reported without retaining a successful di
   const { destination } = await prepareRecovery(extensionContext, progress, savedFiles());
   await destination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
   await expect(progress.getByText('Recorded acceptance from GitHub', { exact: true })).toBeVisible();
-  await progress.evaluate(async () => {
-    const stored = await chrome.storage.local.get(null);
-    const key = Object.keys(stored).find(key => key.startsWith('recovery-v1:'));
-    if (!key) throw new Error('Expected a saved recovery cache.');
-    await chrome.storage.local.set({ [key]: { schemaVersion: 99 } });
-  });
+  await progress.evaluate(() => new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open('progress-sync-recovery', 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result;
+      const transaction = db.transaction('states', 'readwrite');
+      const cursor = transaction.objectStore('states').openCursor();
+      cursor.onsuccess = () => {
+        if (!cursor.result) {
+          transaction.abort();
+          reject(new Error('Expected a saved recovery cache.'));
+          return;
+        }
+        cursor.result.update({ schemaVersion: 99 });
+      };
+      transaction.oncomplete = () => { db.close(); resolve(); };
+      transaction.onabort = () => { db.close(); reject(transaction.error); };
+    };
+  }));
+  const worker = extensionContext.serviceWorkers()[0];
+  if (!worker) throw new Error('Expected the active extension worker.');
+  await worker.evaluate(() => chrome.runtime.sendMessage({ type: 'recovery:changed' }));
   await expect(progress.locator('#recovery-status')).toHaveText('Saved recovery data is invalid. It has not been overwritten.');
   await expect(progress.getByText('Recorded acceptance from GitHub', { exact: true })).toHaveCount(0);
   await expect(progress.getByRole('status')).toContainText('No captured attempts yet.');
@@ -415,4 +431,54 @@ test('read-only recovery does not retry or confirm an uncertain local delivery j
   await expect(progress.getByText('Saved to GitHub', { exact: true })).toHaveCount(0);
   expect(remote.writes).toHaveLength(writes);
   expect(remote.updates).toBe(1);
+});
+
+test('a complete archive larger than the Chrome local-storage quota remains recoverable after reload', async ({
+  extensionContext, progress,
+}) => {
+  test.setTimeout(60_000);
+  const source = ' '.repeat(256 * 1024 - submittedBytes.length) + submittedBytes;
+  const files = new Map<string, string>();
+  for (let index = 1; index <= 41; index++) {
+    const id = `${index.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`;
+    for (const [path, content] of savedFiles(id, 'step_one', source)) files.set(path, content);
+  }
+  const { destination, remote } = await prepareRecovery(extensionContext, progress, files);
+  await destination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
+  await expect(progress.getByText('Recorded acceptance from GitHub', { exact: true })).toHaveCount(41, { timeout: 30_000 });
+  await progress.reload();
+  await expect(progress.getByText('Recorded acceptance from GitHub', { exact: true })).toHaveCount(41);
+  expect(await progress.evaluate(() => chrome.storage.local.getBytesInUse(null))).toBeLessThan(10 * 1024 * 1024);
+  expect(remote.writes).toBe(0);
+});
+
+test('a late manual-refresh error cannot overwrite a newer successful recovery in the UI', async ({
+  extensionContext, progress,
+}) => {
+  const { destination, target, remote } = await prepareRecovery(extensionContext, progress, savedFiles());
+  await destination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
+  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 unverified saved entries.');
+  await progress.evaluate(() => {
+    const original = chrome.runtime.sendMessage.bind(chrome.runtime);
+    chrome.runtime.sendMessage = new Proxy(original, {
+      async apply(target, receiver, args) {
+        const reply: unknown = await Reflect.apply(target, receiver, args);
+        if (args[0]?.type === 'recovery:refresh') Reflect.set(globalThis, 'manualRefreshFinished', true);
+        return reply;
+      },
+    });
+  });
+  const gate = Promise.withResolvers<void>();
+  remote.readGate = gate.promise;
+  const reads = remote.reads.length;
+  await progress.getByRole('button', { name: 'Refresh saved progress' }).click();
+  await expect.poll(() => remote.reads.length).toBeGreaterThan(reads);
+  await recoveryFixture(extensionContext, target, {
+    files: savedFiles('22222222-2222-4222-8222-222222222222', 'wire'), head: 'c'.repeat(40),
+  });
+  await destination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
+  await expect(progress.getByRole('heading', { name: 'hdlbits:wire', exact: true })).toBeVisible();
+  gate.resolve();
+  await expect.poll(() => progress.evaluate(() => Reflect.get(globalThis, 'manualRefreshFinished'))).toBe(true);
+  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 unverified saved entries.');
 });

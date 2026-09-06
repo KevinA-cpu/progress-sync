@@ -57,7 +57,7 @@ export default defineBackground(() => {
       case DESTINATION_MESSAGE_PREFIX:
         void destination.message(message, sender).then(reply => {
           sendResponse(reply);
-          if (reply.ok && reply.view.verified && messageType !== DESTINATION_MESSAGE.create) recovery.selected();
+          if (reply.ok && reply.view.verified && messageType !== DESTINATION_MESSAGE.create) void recovery.selected();
         }, () => {
           console.error(DESTINATION_TEXT.operationFailed);
           const reply: DestinationReply = { ok: false, error: DESTINATION_ISSUE.networkError };

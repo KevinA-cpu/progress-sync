@@ -1,7 +1,9 @@
 import { z } from '../schema';
 import { DELIVERY_PATH, GIT_MODE, GIT_OBJECT, GIT_RECURSIVE, deliveryPaths, deliveryRoot } from '../constants/delivery';
 import { MAX_SOURCE_BYTES } from '../constants/progress';
-import { MAX_METADATA_BYTES, RECOVERY_ENCODING, RECOVERY_ENTRY, RECOVERY_ISSUE, RECOVERY_TEXT } from '../constants/recovery';
+import {
+  MAX_METADATA_BYTES, RECOVERY_ENCODING, RECOVERY_ENTRY, RECOVERY_ISSUE, RECOVERY_SOURCE_SUFFIX, RECOVERY_TEXT,
+} from '../constants/recovery';
 import { destinationApi } from '../destination/api';
 import type { DestinationTarget } from '../destination/schemas';
 import { githubRest } from '../github/rest';
@@ -128,7 +130,7 @@ export async function recoverProgress(
     }
   }
   for (const file of files.values()) {
-    if (!file.path.toLowerCase().endsWith('.v') || consumed.has(file.path)) continue;
+    if (!file.path.toLowerCase().endsWith(RECOVERY_SOURCE_SUFFIX) || consumed.has(file.path)) continue;
     const recovered = await readSource(file);
     entries.push({
       state: RECOVERY_ENTRY.unverified, path: file.path,

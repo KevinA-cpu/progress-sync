@@ -5,9 +5,10 @@ import { DESTINATION_STORAGE_PREFIX } from '../../lib/constants/destination';
 import { deliveryCommitUrl, DELIVERY_TEXT } from '../../lib/constants/delivery';
 import { PROGRESS_TEXT } from '../../lib/constants/progress';
 import {
-  RECOVERY_ENTRY, RECOVERY_MESSAGE, RECOVERY_MESSAGES, RECOVERY_STATUS, RECOVERY_STORAGE_PREFIX, RECOVERY_TEXT,
+  RECOVERY_ENTRY, RECOVERY_MESSAGE, RECOVERY_MESSAGES, RECOVERY_STATUS, RECOVERY_TEXT,
 } from '../../lib/constants/recovery';
-import { recoveryReplySchema, type RecoveredEntry } from '../../lib/recovery/schemas';
+import { recoveryNotificationSchema, recoveryReplySchema, type RecoveredEntry } from '../../lib/recovery/schemas';
+import { readRecoveryCache } from '../../lib/recovery/cache';
 import type { DestinationTarget } from '../../lib/destination/schemas';
 import { renderMetadata, renderSource } from './fields';
 
@@ -56,12 +57,15 @@ export function initializeRecovery(): void {
     try {
       const reply = recoveryReplySchema.parse(await browser.runtime.sendMessage({ type: RECOVERY_MESSAGE.list }));
       if (!reply.ok) throw new Error(reply.error);
+      let state = reply.selection ? await readRecoveryCache(reply.selection) : null;
+      if (state?.status === RECOVERY_STATUS.loading && !reply.active) {
+        state = { ...state, status: RECOVERY_STATUS.failed, error: RECOVERY_TEXT.interrupted };
+      }
       if (current !== generation) return;
       selection = reply.selection;
-      ui.refresh.disabled = !selection || reply.state?.status === RECOVERY_STATUS.loading;
+      ui.refresh.disabled = !selection || state?.status === RECOVERY_STATUS.loading;
       ui.status.className = '';
       ui.origin.replaceChildren();
-      const state = reply.state;
       switch (state?.status) {
         case RECOVERY_STATUS.loading:
           ui.status.textContent = RECOVERY_TEXT.loading;
@@ -115,13 +119,16 @@ export function initializeRecovery(): void {
       return;
     }
     ui.refresh.disabled = true;
+    const current = ++generation;
     try {
       const reply = recoveryReplySchema.parse(await browser.runtime.sendMessage({
         type: RECOVERY_MESSAGE.refresh, expectedConnectionId: selection.connectionId, expectedSelectionId: selection.operationId,
       }));
+      if (current !== generation) return;
       if (!reply.ok) throw new Error(reply.error);
       await load();
     } catch (error) {
+      if (current !== generation) return;
       ui.status.textContent = error instanceof Error ? error.message : RECOVERY_TEXT.readFailed;
       ui.status.className = 'unverified';
       ui.refresh.disabled = !selection;
@@ -129,8 +136,13 @@ export function initializeRecovery(): void {
   });
   browser.storage.onChanged.addListener((changes, area) => {
     if ((area === STORAGE_AREA.local && Object.keys(changes).some(key =>
-      key.startsWith(RECOVERY_STORAGE_PREFIX) || key.startsWith(DESTINATION_STORAGE_PREFIX)))
+      key.startsWith(DESTINATION_STORAGE_PREFIX)))
       || (area === STORAGE_AREA.session && AUTH_SESSION_KEY in changes)) void load();
+  });
+  browser.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
+    if (sender.id !== browser.runtime.id || sender.tab !== undefined || !recoveryNotificationSchema.safeParse(message).success) return;
+    void load();
+    sendResponse({ ok: true });
   });
   void load();
 }

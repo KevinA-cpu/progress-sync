@@ -62,10 +62,11 @@ export const recoveryRequestSchema = z.discriminatedUnion('type', [
 ]);
 export const recoveryReplySchema = z.discriminatedUnion('ok', [
   z.strictObject({
-    ok: z.literal(true), selection: destinationTargetSchema.nullable(), state: recoveryStateSchema.nullable(),
+    ok: z.literal(true), selection: destinationTargetSchema.nullable(), active: z.boolean(),
   }),
   z.strictObject({ ok: z.literal(false), error: z.string() }),
 ]);
+export const recoveryNotificationSchema = z.strictObject({ type: z.literal(RECOVERY_MESSAGE.changed) });
 export type RecoveryReply = z.infer<typeof recoveryReplySchema>;
 export class RecoveryFault extends Error {
   constructor(message: string) { super(message); }

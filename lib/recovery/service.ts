@@ -1,43 +1,40 @@
 import { browser, type Browser } from 'wxt/browser';
-import { EXTENSION_PAGE, STORAGE_ACCESS } from '../constants/browser';
+import { EXTENSION_PAGE } from '../constants/browser';
 import { DESTINATION_ISSUE } from '../constants/destination';
 import { AUTH_ISSUE } from '../constants/github';
-import { RECOVERY_MESSAGE, RECOVERY_STATUS, RECOVERY_STORAGE_PREFIX, RECOVERY_TEXT } from '../constants/recovery';
+import { RECOVERY_MESSAGE, RECOVERY_STATUS, RECOVERY_TEXT } from '../constants/recovery';
 import type { GithubService } from '../github/service';
 import { AuthFault } from '../github/schemas';
 import type { DestinationService } from '../destination/service';
-import { DestinationFault, type DestinationTarget } from '../destination/schemas';
+import { DestinationFault } from '../destination/schemas';
 import {
-  parseRecovery, RecoveryFault, recoveryRequestSchema, recoveryStateSchema, type RecoveryReply, type RecoveryState,
+  RecoveryFault, recoveryRequestSchema, type RecoveryReply, type RecoveryState,
 } from './schemas';
 import { recoverProgress } from './api';
+import { readRecoveryCache, recoveryCacheKey, writeRecoveryCache } from './cache';
+
+function errorMessage(error: unknown, aborted = false): string {
+  if (error instanceof RecoveryFault || error instanceof DestinationFault) return error.message;
+  return error instanceof AuthFault || aborted ? RECOVERY_TEXT.sessionChanged : RECOVERY_TEXT.readFailed;
+}
 
 export function createRecoveryService(github: GithubService, destination: DestinationService) {
-  const ready = browser.storage.local.setAccessLevel({ accessLevel: STORAGE_ACCESS.trustedContexts });
   let generation = 0;
   let activeKey: string | null = null;
-  let writes: Promise<unknown> = ready;
-  function key(target: DestinationTarget) {
-    return RECOVERY_STORAGE_PREFIX + JSON.stringify([
-      target.userId, target.clientId, target.installationId, target.appId, target.repositoryId, target.branch,
-    ]);
-  }
-  async function read(target: DestinationTarget): Promise<RecoveryState | null> {
-    await ready;
-    const value: unknown = (await browser.storage.local.get(key(target)))[key(target)];
-    if (value === undefined) return null;
-    const state = parseRecovery(value, recoveryStateSchema, RECOVERY_TEXT.storedInvalid);
-    if (key(state.target) !== key(target)) throw new RecoveryFault(RECOVERY_TEXT.storedInvalid);
-    return state.status === RECOVERY_STATUS.loading && activeKey !== key(target)
-      ? { ...state, status: RECOVERY_STATUS.failed, error: RECOVERY_TEXT.interrupted } : state;
+  let writes: Promise<unknown> = Promise.resolve();
+  async function notify(): Promise<void> {
+    try {
+      await browser.runtime.sendMessage({ type: RECOVERY_MESSAGE.changed });
+    } catch {
+      console.warn(RECOVERY_TEXT.notificationFailed);
+    }
   }
   function save(state: RecoveryState, current: number, guard?: () => Promise<void>) {
     const action = writes.then(async () => {
       if (guard) await guard();
       if (current !== generation) throw new RecoveryFault(RECOVERY_TEXT.sessionChanged);
-      await browser.storage.local.set({
-        [key(state.target)]: parseRecovery(state, recoveryStateSchema, RECOVERY_TEXT.storedInvalid),
-      });
+      await writeRecoveryCache(state);
+      await notify();
     });
     writes = action.then(() => undefined, () => undefined);
     return action;
@@ -54,11 +51,11 @@ export function createRecoveryService(github: GithubService, destination: Destin
         await destination.guardSelection(session, target);
         if (current !== generation) throw new RecoveryFault(RECOVERY_TEXT.sessionChanged);
       }
-      activeKey = key(target);
+      activeKey = recoveryCacheKey(target);
       let prior: RecoveryState | null = null;
       let state: RecoveryState | null = null;
       try {
-        prior = await read(target);
+        prior = await readRecoveryCache(target);
         state = {
           schemaVersion: 1, target, status: RECOVERY_STATUS.loading, snapshot: prior?.snapshot ?? null, error: null,
         };
@@ -70,32 +67,34 @@ export function createRecoveryService(github: GithubService, destination: Destin
         if (current === generation && state) {
           state = {
             ...state, status: RECOVERY_STATUS.failed, snapshot: prior?.snapshot ?? null,
-            error: error instanceof RecoveryFault || error instanceof DestinationFault ? error.message
-              : error instanceof AuthFault || signal.aborted ? RECOVERY_TEXT.sessionChanged : RECOVERY_TEXT.readFailed,
+            error: errorMessage(error, signal.aborted),
           };
           await save(state, current);
         }
-        throw error;
+        throw new RecoveryFault(errorMessage(error, signal.aborted));
       } finally {
         if (current === generation) activeKey = null;
       }
     });
   }
-  function selected(): void {
-    void restore().catch(() => { console.warn(RECOVERY_TEXT.operationFailed); });
+  async function selected(): Promise<void> {
+    try {
+      await restore();
+    } catch {
+      console.warn(RECOVERY_TEXT.operationFailed);
+    }
   }
   async function view(): Promise<RecoveryReply> {
     try {
       return await github.withConnection(async (session, guard) => {
         const target = await destination.selection(session);
-        const state = await read(target);
         await guard();
-        return { ok: true, selection: target, state };
+        return { ok: true, selection: target, active: activeKey === recoveryCacheKey(target) };
       });
     } catch (error) {
       if ((error instanceof AuthFault && error.issue === AUTH_ISSUE.notConnected)
         || (error instanceof DestinationFault && error.issue === DESTINATION_ISSUE.selectionRequired)) {
-        return { ok: true, selection: null, state: null };
+        return { ok: true, selection: null, active: false };
       }
       throw error;
     }
@@ -116,8 +115,7 @@ export function createRecoveryService(github: GithubService, destination: Destin
           return await view();
       }
     } catch (error) {
-      return { ok: false, error: error instanceof RecoveryFault || error instanceof DestinationFault ? error.message
-        : error instanceof AuthFault ? RECOVERY_TEXT.sessionChanged : RECOVERY_TEXT.readFailed };
+      return { ok: false, error: errorMessage(error) };
     }
   }
   return { message, selected };

@@ -1,6 +1,10 @@
 export const RECOVERY_STORAGE_PREFIX = 'recovery-v1:';
+export const RECOVERY_DATABASE = 'progress-sync-recovery';
+export const RECOVERY_DATABASE_VERSION = 1;
+export const RECOVERY_STORE = 'states';
+export const RECOVERY_SOURCE_SUFFIX = '.v';
 export const RECOVERY_MESSAGE_PREFIX = 'recovery:';
-export const RECOVERY_MESSAGE = { list: 'recovery:list', refresh: 'recovery:refresh' } as const;
+export const RECOVERY_MESSAGE = { list: 'recovery:list', refresh: 'recovery:refresh', changed: 'recovery:changed' } as const;
 export const RECOVERY_STATUS = { loading: 'loading', ready: 'ready', failed: 'failed' } as const;
 export const RECOVERY_ENTRY = { recorded: 'recorded', unverified: 'unverified' } as const;
 export const MAX_REMOTE_PATH_LENGTH = 4096;
@@ -31,6 +35,7 @@ export const RECOVERY_TEXT = {
   storedInvalid: 'Saved recovery data is invalid. It has not been overwritten.',
   sessionChanged: 'The connection or destination changed during recovery. No recovered records were assigned to the new destination.',
   operationFailed: 'Progress Sync: recovery did not complete.',
+  notificationFailed: 'Progress Sync: saved-progress change notification was not delivered.',
   interfaceIncomplete: 'Saved-progress interface is incomplete.',
   cached: 'Showing the previously recovered snapshot, not a completed refresh.',
   recorded: 'Recorded acceptance from GitHub',

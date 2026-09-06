@@ -327,8 +327,14 @@ These records are extension-observed provenance, **not signed grading
 certificates**. Repository owners can edit source and metadata. GitHub cannot
 recover unsaved guest history or another device's undelivered local jobs.
 
-The local recovery cache is scoped to the account, App installation, repository
-ID, and branch. A failed refresh retains a previous complete snapshot only with
+The recovery cache uses extension-origin IndexedDB through `idb`, not Chrome's
+10 MB `storage.local` area. The worker and trusted progress page read it locally;
+complete archives are not sent through size-limited runtime messages. No extra
+storage permission is requested. Available browser disk/memory still applies;
+a storage failure is reported rather than silently dropping records.
+
+The cache is scoped to the account, App installation, repository ID, and branch.
+A failed refresh retains a previous complete snapshot only with
 an explicit stale-cache notice. Worker interruption is reported and can be
 retried with **Refresh saved progress**. A stale or superseded request cannot
 replace a newer selection's snapshot. Invalid cached data is reported rather than
@@ -355,12 +361,17 @@ published only to an intentionally selected public destination. Local storage is
 clearing extension data, uninstalling, or losing the device can lose these
 records. Keep independent backups.
 
-Runtime data contracts use strict Zod schemas, with TypeScript types inferred
+Extension-owned data contracts use strict Zod schemas, with TypeScript types inferred
 from those schemas rather than maintained separately. Submitted fields, runtime
 requests/replies, and persisted records are validated without coercion or source
 transformations. Accepted records must include the source, hash, observation
 timestamp, and parent/result document provenance. Invalid stored records are
 reported explicitly, not silently stripped, reset, or overwritten.
+
+GitHub transport-response schemas validate the fields consumed by the extension
+and allow additional GitHub fields, matching the SDK's extensible responses.
+This does not apply to acceptance metadata, extension messages, or saved records:
+those remain strict and reject unknown fields.
 
 Zod's JIT compilation is disabled to respect Manifest V3's content security
 policy without permitting `eval`. Schema validation checks data structure;
