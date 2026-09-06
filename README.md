@@ -1,11 +1,14 @@
 # Progress Sync
 
 Progress Sync records exact HDLBits submissions locally, supports GitHub App
-device authorization, and creates or connects a verified public progress repository.
+device authorization, creates or connects a verified public progress repository,
+and publishes accepted solutions with their progress metadata atomically.
 These slices implement [ticket #2](https://github.com/KevinA-cpu/progress-sync/issues/2),
-[ticket #3](https://github.com/KevinA-cpu/progress-sync/issues/3), and
-[ticket #4](https://github.com/KevinA-cpu/progress-sync/issues/4).
-**Solution uploads and cross-browser progress recovery are not implemented yet.**
+[ticket #3](https://github.com/KevinA-cpu/progress-sync/issues/3),
+[ticket #4](https://github.com/KevinA-cpu/progress-sync/issues/4), and
+[ticket #5](https://github.com/KevinA-cpu/progress-sync/issues/5).
+**Automatic retries, uncertain-write reconciliation, and cross-browser recovery
+are not implemented yet.**
 
 HDLBits login is not required. The extension's progress is separate from HDLBits'
 official completion state.
@@ -28,6 +31,7 @@ focused run:
 pnpm test -- capture.spec.ts -g "editing while grading"
 pnpm test -- github.spec.ts
 pnpm test -- destination.spec.ts
+pnpm test -- publication.spec.ts
 ```
 
 After a build, tests can be rerun without rebuilding:
@@ -71,6 +75,8 @@ Runtime strings are grouped by domain under [lib/constants](lib/constants):
   states, grading verdicts, persistence keys, and progress messages.
 - [Destination constants](lib/constants/destination.ts): marker identity,
   operation phases, setup message/error codes, and destination messages.
+- [Delivery constants](lib/constants/delivery.ts): job states, publication paths,
+  constrained messages, and delivery diagnostics.
 
 Zod schemas and runtime switches consume the same literal-valued constant
 objects. Existing wire values, storage keys, and UI messages are unchanged.
@@ -180,9 +186,8 @@ in the GitHub constants rather than repeated as unexplained numbers.
 The version-1 `.progress-sync.json` marker identifies a compatible repository.
 It contains `kind: "progress-sync"`, `schemaVersion: 1`, and a UUID
 `initializationId`. It contains no credential, source code, or claim that any
-solution passed grading. Creating the marker is the only content write in this
-slice; initialization never supplies an existing file SHA or overwrites a file.
-Solution and acceptance-record publication belong to the next ticket.
+solution passed grading. Initialization never supplies an existing file SHA or
+overwrites a file. Accepted solutions use the separate atomic publication flow below.
 
 **Connect existing repository** is explicit and read-only for compatible
 populated repositories. It discovers the default branch or verifies an entered
@@ -218,6 +223,55 @@ record is not an ongoing guarantee of write access.
 - Permissions are a point-in-time check. Branch rules, policy changes, and later
   revocation can still reject a future write; no future writability is promised.
 
+## Atomic accepted-solution publication
+
+After destination setup, newly submitted and accepted attempts are automatically
+assigned to that destination. A connection and destination must both have been
+verified before the submission. Older or otherwise unassigned accepted attempts
+stay local until the learner explicitly chooses the displayed destination from
+the progress tab. Changing settings never redirects an existing job.
+
+Before making publication requests, the worker persists a version-1 delivery job
+with the immutable accepted snapshot, attempt/idempotency ID, original account,
+App/installation/repository identities, and explicit branch. Credentials remain
+separate in session storage. The progress view distinguishes locally accepted,
+awaiting delivery, blocked, uncertain, and saved work.
+
+Each accepted attempt adds two files:
+
+```text
+progress/hdlbits/<problem>/<attempt UUID>/solution.v
+progress/hdlbits/<problem>/<attempt UUID>/acceptance.json
+```
+
+The source preserves the submitted UTF-8 bytes, including form-normalized CRLF
+line endings. The strict version-1 acceptance record contains `provider`,
+`problemId`, `attemptId`, `sourceHash` (SHA-256), `submittedAt`, `observedAt`, and
+`provenance: { capture: "browser-post", verdict: "success" }`. It does not include
+browser tab/document/request identifiers, diagnostics, credentials, problem
+statements, or diagrams. The source itself is learner-controlled; do not submit
+secrets or material you cannot publish.
+
+Named Octokit Git Data methods create a tree based on the current branch's tree,
+add both files to a single-parent commit, and update the selected branch with
+`force: false`. A changed head or an existing attempt path blocks publication;
+matching source bytes alone are not a delivery receipt. Truncated tree responses
+are rejected rather than assuming missing entries are absent. Before committing,
+the proposed tree is read back and checked for both exact Git blob IDs and
+preserved unrelated entries/file modes. Git blob IDs use Git's SHA-1 object
+format; the acceptance record continues to use SHA-256 for submitted source.
+Unrelated remote
+files are preserved. A saved receipt links to the confirmed complete commit and
+is stored locally, outside its own committed metadata.
+
+Actual permission/ruleset failures remain blocked with the accepted snapshot
+intact. Lost responses and interrupted publication remain uncertain and are not
+automatically retried or called successful, even if GitHub may have applied the
+update. Worker/browser restart does not erase these jobs. Creating Git objects
+can leave unreferenced objects if a later step fails; only the final branch update
+makes the complete commit visible on the selected branch. Repair/reconciliation,
+retry scheduling, and remote restoration are later tickets.
+
 ## What is recorded
 
 - The actual browser-observed submitted text, including form line-ending
@@ -227,8 +281,8 @@ record is not an ongoing guarantee of write access.
 - A distinct waiting, accepted-locally, or unverified state. Accepted locally
   **does not** mean backed up to GitHub.
 
-Records stay in trusted-context-only local extension storage. Source text is
-not sent anywhere by the extension. Local storage is not an encrypted vault;
+Records stay in trusted-context-only local extension storage. Accepted source is
+published only to an intentionally selected public destination. Local storage is not an encrypted vault;
 clearing extension data, uninstalling, or losing the device can lose these
 records. Keep independent backups.
 
@@ -322,6 +376,10 @@ nonstandard branches, permission and membership failures, pagination, uncertain
 creation/initialization, worker restart, changed repository identities, and
 session-bound consent. They create no real repository or GitHub content.
 
+Publication tests extend that boundary with immutable Git trees/commits and a
+non-force branch update. They run real onboarding, capture, and publication and
+check exact remote files together with the visible receipt or failure state.
+
 Coverage includes accepted bytes, post-submit edits and hashes, failed and stale
 results, ambiguous layouts and payloads, historical/forged observations,
 timeouts, cross-tab overlap, page/worker recreation, correction after failure,
@@ -349,3 +407,5 @@ Relevant platform contracts:
 - [Octokit OAuth methods](https://github.com/octokit/oauth-methods.js)
 - [User-access-token installations and permissions](https://docs.github.com/en/rest/apps/installations#list-app-installations-accessible-to-the-user-access-token)
 - [Create a repository for the authenticated user](https://docs.github.com/en/rest/repos/repos#create-a-repository-for-the-authenticated-user)
+- [Git trees and base-tree preservation](https://docs.github.com/en/rest/git/trees#create-a-tree)
+- [Non-force reference updates](https://docs.github.com/en/rest/git/refs#update-a-reference)

@@ -10,11 +10,15 @@ import { authEnvelopeSchema, type AuthReply } from '../lib/github/schemas';
 import { createGithubService } from '../lib/github/service';
 import { createDestinationService } from '../lib/destination/service';
 import { destinationEnvelopeSchema, type DestinationReply } from '../lib/destination/schemas';
+import { createDeliveryService } from '../lib/delivery/service';
+import { deliveryEnvelopeSchema, type DeliveryReply } from '../lib/delivery/schemas';
+import { DELIVERY_TEXT } from '../lib/constants/delivery';
 
 export default defineBackground(() => {
-  const capture = createCaptureService();
   const github = createGithubService();
   const destination = createDestinationService(github);
+  const delivery = createDeliveryService(github, destination);
+  const capture = createCaptureService(delivery.accepted);
   const requests = { urls: [GRADING_URL], types: [RESOURCE_TYPE.mainFrame, RESOURCE_TYPE.subFrame] as const };
   const filter = { urls: requests.urls, types: [...requests.types] };
   browser.webRequest.onBeforeRequest.addListener(capture.request, filter, [WEB_REQUEST_OPTION.requestBody]);
@@ -25,6 +29,14 @@ export default defineBackground(() => {
     url: [{ hostEquals: HDL_HOST }],
   });
   browser.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
+    if (deliveryEnvelopeSchema.safeParse(message).success) {
+      void delivery.message(message, sender).then(sendResponse, () => {
+        console.error(DELIVERY_TEXT.operationFailed);
+        const reply: DeliveryReply = { ok: false, error: DELIVERY_TEXT.operationFailed };
+        sendResponse(reply);
+      });
+      return true;
+    }
     if (destinationEnvelopeSchema.safeParse(message).success) {
       void destination.message(message, sender).then(sendResponse, () => {
         console.error(DESTINATION_TEXT.operationFailed);

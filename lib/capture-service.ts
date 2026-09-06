@@ -20,7 +20,7 @@ interface Operation {
   result: { documentId: string; observation: ResultObservation } | null;
 }
 
-export function createCaptureService() {
+export function createCaptureService(onAccepted: (attemptId: string) => void) {
   let attempts: Attempt[] = [];
   const operations = new Map<string, Operation>();
   const quarantinedParents = new Set<string>();
@@ -124,6 +124,7 @@ export function createCaptureService() {
     }
     await save();
     operations.delete(attempt.provenance.requestId);
+    if (attempt.state === CAPTURE_STATE.accepted) onAccepted(attempt.id);
   }
 
   function request(details: Browser.webRequest.OnBeforeRequestDetails): undefined {

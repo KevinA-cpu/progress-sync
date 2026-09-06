@@ -206,5 +206,7 @@ export function createDestinationService(github: GithubService) {
       return { ok: false, error: DESTINATION_ISSUE.networkError };
     }
   }
-  return { message };
+  return { message, readJournal };
 }
+
+export type DestinationService = ReturnType<typeof createDestinationService>;
