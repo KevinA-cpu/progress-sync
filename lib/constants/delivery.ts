@@ -39,10 +39,11 @@ export const DELIVERY_TEXT = {
   commitMessage: (provider: string, problem: string, attemptId: string) =>
     `Record accepted ${provider}:${problem} attempt ${attemptId}`,
 } as const;
+export const DELIVERY_PATH = { root: 'progress', source: 'solution.v', metadata: 'acceptance.json' } as const;
 export const deliveryRoot = (provider: string, problem: string, attemptId: string) =>
-  `progress/${provider}/${problem}/${attemptId}`;
+  `${DELIVERY_PATH.root}/${provider}/${problem}/${attemptId}`;
 export const deliveryPaths = (root: string) => ({
-  source: `${root}/solution.v`, metadata: `${root}/acceptance.json`,
+  source: `${root}/${DELIVERY_PATH.source}`, metadata: `${root}/${DELIVERY_PATH.metadata}`,
 });
 export const deliveryRef = (branch: string) => `heads/${branch}`;
 export const deliveryCommitUrl = (owner: string, name: string, sha: string) =>

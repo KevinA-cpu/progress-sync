@@ -46,6 +46,7 @@ const api = `https://api.github.com${base}`;
 const initialHead = 'a'.repeat(40);
 const initialTree = 'b'.repeat(40);
 const hash = (value: string) => createHash('sha1').update(value, 'utf8').digest('hex');
+const blobHash = (content: string) => hash(`blob ${Buffer.byteLength(content, 'utf8')}\0${content}`);
 const hasFileDirectoryCollision = (files: ReadonlyMap<string, string>) =>
   [...files.keys()].some(path => {
     const parts = path.split('/');
@@ -117,7 +118,7 @@ export async function publicationFixture(
       const parts = path.split('/');
       for (let index = 1; index < parts.length; index++) directories.add(parts.slice(0, index).join('/'));
       const size = Buffer.byteLength(content, 'utf8');
-      const blob = hash(`blob ${size}\0${content}`);
+      const blob = blobHash(content);
       return { path, mode: '100644', type: 'blob', sha: blob, size, url: `${api}/git/blobs/${blob}` };
     });
     const directoryEntries = [...directories].map(path => {
@@ -167,10 +168,11 @@ export async function publicationFixture(
 
     const commitMatch = /^\/git\/commits\/([0-9a-f]{40})$/.exec(path.slice(base.length));
     const treeMatch = /^\/git\/trees\/([0-9a-f]{40})$/.exec(path.slice(base.length));
+    const blobMatch = /^\/git\/blobs\/([0-9a-f]{40})$/.exec(path.slice(base.length));
     const stage: WriteStage | null = method === 'POST' && path === `${base}/git/trees` ? 'tree'
       : method === 'POST' && path === `${base}/git/commits` ? 'commit'
         : method === 'PATCH' && path === `${base}/git/refs/heads/${destination.defaultBranch}` ? 'ref' : null;
-    check((method === 'GET' && (commitMatch || treeMatch)) || stage, `${method} ${path}`);
+    check((method === 'GET' && (commitMatch || treeMatch || blobMatch)) || stage, `${method} ${path}`);
     if (treeMatch) {
       check(url.searchParams.size === 1 && ['1', 'true'].includes(url.searchParams.get('recursive') ?? ''),
         `${method} ${path}: expected recursive tree`);
@@ -203,6 +205,20 @@ export async function publicationFixture(
       });
     }
 
+    if (blobMatch) {
+      const sha = blobMatch[1];
+      for (const files of trees.values()) {
+        for (const content of files.values()) {
+          if (blobHash(content) === sha) {
+            return route.fulfill({ json: {
+              sha, size: Buffer.byteLength(content, 'utf8'),
+              encoding: 'base64', content: Buffer.from(content, 'utf8').toString('base64'),
+            } });
+          }
+        }
+      }
+      return route.fulfill({ status: 404, json: { message: 'Not found' } });
+    }
     check(stage, `${method} ${path}: missing write stage`);
     let body: unknown;
     try {

@@ -4,8 +4,7 @@ import {
 } from '../constants/delivery';
 import { CAPTURE_PROVENANCE, CAPTURE_STATE, GRADING_VERDICT, PROGRESS_PROVIDER } from '../constants/progress';
 import { attemptSchema, problemIdSchema, submittedSourceSchema } from '../progress';
-import { branchNameSchema, journalSchema } from '../destination/schemas';
-import { clientIdSchema, githubUserSchema } from '../github/schemas';
+import { destinationTargetSchema } from '../destination/schemas';
 
 export const gitShaSchema = z.string().regex(/^[a-f0-9]{40}$/);
 export const gitObjectSchema = z.object({ sha: gitShaSchema });
@@ -14,13 +13,7 @@ export const acceptedSnapshotSchema = attemptSchema.safeExtend({
   state: z.literal(CAPTURE_STATE.accepted), problemId: problemIdSchema, source: submittedSourceSchema,
   sourceHash: sourceHashSchema, observedAt: z.iso.datetime(),
 });
-export const deliveryTargetSchema = journalSchema.pick({
-  operationId: true, userId: true, owner: true, name: true, clientId: true, installationId: true,
-  appId: true, repositoryId: true, branch: true, connectionId: true,
-}).extend({
-  owner: githubUserSchema.shape.login, clientId: clientIdSchema,
-  repositoryId: z.int().positive(), branch: branchNameSchema, selectedAt: z.iso.datetime(),
-});
+export const deliveryTargetSchema = destinationTargetSchema;
 export type DeliveryTarget = z.infer<typeof deliveryTargetSchema>;
 export const acceptanceRecordSchema = z.strictObject({
   schemaVersion: z.literal(1), provider: z.literal(PROGRESS_PROVIDER), problemId: problemIdSchema,

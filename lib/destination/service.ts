@@ -11,7 +11,7 @@ import { destinationApi } from './api';
 import { githubResponseStatus, GithubWriteRejected } from '../github/errors';
 import {
   DestinationFault, destinationRequestSchema, journalSchema, type DestinationJournal,
-  type DestinationReply, type DestinationView, type Installation,
+  destinationTargetSchema, type DestinationReply, type DestinationTarget, type DestinationView, type Installation,
 } from './schemas';
 
 export function createDestinationService(github: GithubService) {
@@ -30,6 +30,31 @@ export function createDestinationService(github: GithubService) {
     const parsed = journalSchema.safeParse(journal);
     if (!parsed.success) throw new DestinationFault(DESTINATION_ISSUE.storedDataInvalid);
     await browser.storage.local.set({ [key(journal.userId)]: parsed.data });
+  }
+  async function selection(session: ConnectedSession): Promise<DestinationTarget> {
+    const journal = await readJournal(session.user.id);
+    if (!journal || journal.phase !== DESTINATION_PHASE.ready || journal.connectionId !== session.connectionId
+      || journal.clientId !== session.clientId || journal.owner !== session.user.login) {
+      throw new DestinationFault(DESTINATION_ISSUE.selectionRequired);
+    }
+    const { operationId, userId, owner, name, clientId, installationId, appId, repositoryId,
+      branch, connectionId, verifiedAt } = journal;
+    const parsed = destinationTargetSchema.safeParse({
+      operationId, userId, owner, name, clientId, installationId, appId, repositoryId, branch, connectionId,
+      selectedAt: journal.selectedAt ?? verifiedAt,
+    });
+    if (!parsed.success) throw new DestinationFault(DESTINATION_ISSUE.selectionRequired);
+    return parsed.data;
+  }
+  async function guardSelection(session: ConnectedSession, target: DestinationTarget): Promise<void> {
+    const current = await selection(session);
+    if (current.connectionId !== target.connectionId || current.operationId !== target.operationId
+      || current.userId !== target.userId || current.clientId !== target.clientId
+      || current.installationId !== target.installationId || current.appId !== target.appId
+      || current.repositoryId !== target.repositoryId || current.owner !== target.owner
+      || current.name !== target.name || current.branch !== target.branch) {
+      throw new DestinationFault(DESTINATION_ISSUE.sessionChanged);
+    }
   }
   function choose(installations: Installation[], id: number, creating: boolean) {
     const installation = installations.find(item => item.id === id);
@@ -213,7 +238,7 @@ export function createDestinationService(github: GithubService) {
       return { ok: false, error: DESTINATION_ISSUE.networkError };
     }
   }
-  return { message, readJournal };
+  return { message, selection, guardSelection };
 }
 
 export type DestinationService = ReturnType<typeof createDestinationService>;

@@ -175,7 +175,8 @@ test('Unicode source keeps its submitted UTF-8 bytes on a nonstandard branch', a
   const metadata = [...server.files].find(([path]) => path.endsWith('/acceptance.json'));
   expect(JSON.parse(metadata![1]).sourceHash).toBe(createHash('sha256').update(source.replaceAll('\n', '\r\n')).digest('hex'));
   expect(server.requestsValid).toBe(true);
-  await expect(progress.getByText('Destination: fixture-user/progress-solutions @ practice/verilog')).toBeVisible();
+  await expect(progress.getByRole('region', { name: 'Captured attempts' })
+    .getByText('Destination: fixture-user/progress-solutions @ practice/verilog')).toBeVisible();
 });
 
 test('delivery messages reject arbitrary targets, forged snapshots, and stale selection consent', async ({
@@ -540,7 +541,7 @@ test('publication rechecks permissions and repository identity after onboarding'
   destination.contentsWrite = true;
   destination.repositoryId = 202;
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
-  await expect(progress.getByText('Delivery blocked: The account or selected destination changed.', { exact: false })).toBeVisible();
+  await expect(progress.getByText('Delivery blocked: The repository identity, owner, or visibility changed.', { exact: false })).toBeVisible();
   expect(server.writes).toEqual([]);
 });
 

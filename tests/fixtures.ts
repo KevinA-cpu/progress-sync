@@ -27,6 +27,36 @@ export const successPage = `<!doctype html>
 <html><head><title>step_one: Simulation - HDLBits</title></head>
 <body><h2>step_one &mdash; Compile and simulate</h2><h2>Status: Success!</h2></body></html>`;
 
+export async function installProviderRoutes(context: BrowserContext): Promise<void> {
+  await context.route('**/*', async route => {
+    const url = new URL(route.request().url());
+    if (url.protocol === 'chrome-extension:') {
+      await route.continue();
+    } else if (url.origin !== 'https://hdlbits.01xz.net') {
+      await route.abort();
+    } else if (url.pathname === '/wiki/Step_one') {
+      await route.fulfill({ contentType: 'text/html', body: problemPage });
+    } else if (url.pathname === '/runsim.php') {
+      await route.fulfill({ contentType: 'text/html', body: successPage });
+    } else {
+      await route.fulfill({ status: 404, body: 'Not found' });
+    }
+  });
+}
+
+export async function launchExtensionProfile(extensionPath: string, profilePath: string): Promise<BrowserContext> {
+  const context = await chromium.launchPersistentContext(profilePath, {
+    channel: 'chromium',
+    headless: true,
+    args: [
+      `--disable-extensions-except=${extensionPath}`,
+      `--load-extension=${extensionPath}`,
+    ],
+  });
+  await installProviderRoutes(context);
+  return context;
+}
+
 interface ExtensionFixtures {
   githubClientId: string | null;
   extensionContext: BrowserContext;
@@ -40,28 +70,7 @@ export const test = base.extend<ExtensionFixtures>({
     const extensionPath = testInfo.outputPath('extension');
     await cp(resolve('.output', 'chrome-mv3'), extensionPath, { recursive: true });
     await writeFile(resolve(extensionPath, 'github-app.json'), JSON.stringify({ clientId: githubClientId }));
-    const context = await chromium.launchPersistentContext(testInfo.outputPath('profile'), {
-      channel: 'chromium',
-      headless: true,
-      args: [
-        `--disable-extensions-except=${extensionPath}`,
-        `--load-extension=${extensionPath}`,
-      ],
-    });
-    await context.route('**/*', async route => {
-      const url = new URL(route.request().url());
-      if (url.protocol === 'chrome-extension:') {
-        await route.continue();
-      } else if (url.origin !== 'https://hdlbits.01xz.net') {
-        await route.abort();
-      } else if (url.pathname === '/wiki/Step_one') {
-        await route.fulfill({ contentType: 'text/html', body: problemPage });
-      } else if (url.pathname === '/runsim.php') {
-        await route.fulfill({ contentType: 'text/html', body: successPage });
-      } else {
-        await route.fulfill({ status: 404, body: 'Not found' });
-      }
-    });
+    const context = await launchExtensionProfile(extensionPath, testInfo.outputPath('profile'));
     await use(context);
     await context.close();
   },

@@ -34,6 +34,7 @@ export const DESTINATION_ISSUE = {
   networkError: 'network-error',
   storedDataInvalid: 'stored-data-invalid',
   pendingOperation: 'pending-operation',
+  selectionRequired: 'selection-required',
 } as const;
 
 export const DESTINATION_MESSAGES = {
@@ -56,6 +57,7 @@ export const DESTINATION_MESSAGES = {
   [DESTINATION_ISSUE.networkError]: 'GitHub could not be reached. The destination is not verified; try verification again.',
   [DESTINATION_ISSUE.storedDataInvalid]: 'Saved destination data is invalid. It has not been overwritten.',
   [DESTINATION_ISSUE.pendingOperation]: 'A repository operation is unresolved. Verify it or explicitly discard its local setup record first.',
+  [DESTINATION_ISSUE.selectionRequired]: 'Select and verify a public progress repository first.',
 } satisfies Record<(typeof DESTINATION_ISSUE)[keyof typeof DESTINATION_ISSUE], string>;
 
 export const DESTINATION_TEXT = {

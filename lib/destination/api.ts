@@ -1,6 +1,6 @@
 import { DESTINATION_ISSUE, DESTINATION_TEXT, MARKER_KIND, MARKER_PATH } from '../constants/destination';
 import {
-  AUTH_ISSUE, GITHUB_CONTENT, GITHUB_HTTP_STATUS, GITHUB_PAGINATION, GITHUB_PERSONAL_ACCOUNT_TYPE,
+  AUTH_ISSUE, GITHUB_CONTENT, GITHUB_HTTP_STATUS, GITHUB_PAGINATION, GITHUB_PERMISSION, GITHUB_PERSONAL_ACCOUNT_TYPE,
 } from '../constants/github';
 import { z } from '../schema';
 import { AuthFault, githubUserResponseSchema, type ConnectedSession } from '../github/schemas';
@@ -8,7 +8,7 @@ import { githubRest } from '../github/rest';
 import { githubResponseStatus, githubWrite } from '../github/errors';
 import {
   DestinationFault, branchSchema, installationSchema, markerSchema, repositorySchema,
-  type Installation, type Repository,
+  type DestinationTarget, type Installation, type Repository,
 } from './schemas';
 
 export function destinationApi(
@@ -138,5 +138,21 @@ export function destinationApi(
     }
     return parsed.data;
   }
-  return { identity, installations, repository, included, empty, branch, marker, initialize, create };
+  async function verify(target: DestinationTarget) {
+    if (target.userId !== session.user.id || target.owner !== session.user.login || target.clientId !== session.clientId) {
+      throw new DestinationFault(DESTINATION_ISSUE.sessionChanged);
+    }
+    await identity();
+    const installation = (await installations()).find(item => item.id === target.installationId && item.app_id === target.appId);
+    if (!installation || installation.permissions.contents !== GITHUB_PERMISSION.write) {
+      throw new DestinationFault(DESTINATION_ISSUE.permissionDenied);
+    }
+    const repo = await repository(target.name);
+    if (repo.id !== target.repositoryId) throw new DestinationFault(DESTINATION_ISSUE.repositoryChanged);
+    await included(target.installationId, target.repositoryId);
+    const selected = await branch(target.name, target.branch);
+    if (!await marker(target.name, selected.commit.sha)) throw new DestinationFault(DESTINATION_ISSUE.incompatibleRepository);
+    return selected;
+  }
+  return { identity, installations, repository, included, empty, branch, marker, initialize, create, verify };
 }

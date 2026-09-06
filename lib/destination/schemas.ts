@@ -4,7 +4,7 @@ import {
 } from '../constants/destination';
 import { GITHUB_PERMISSION, REPOSITORY_SELECTION } from '../constants/github';
 import { z } from '../schema';
-import { githubUserSchema } from '../github/schemas';
+import { clientIdSchema, githubUserSchema } from '../github/schemas';
 
 export const repositoryNameSchema = z.string().regex(/^[A-Za-z0-9_.-]{1,100}$/)
   .refine(name => name !== '.' && name !== '..');
@@ -49,6 +49,14 @@ export const journalSchema = z.strictObject({
   connectionId: z.uuid(), commitSha: z.string().nullable(),
 });
 export type DestinationJournal = z.infer<typeof journalSchema>;
+export const destinationTargetSchema = journalSchema.pick({
+  operationId: true, userId: true, owner: true, name: true, clientId: true, installationId: true,
+  appId: true, repositoryId: true, branch: true, connectionId: true,
+}).extend({
+  owner: githubUserSchema.shape.login, clientId: clientIdSchema,
+  repositoryId: z.int().positive(), branch: branchNameSchema, selectedAt: z.iso.datetime(),
+});
+export type DestinationTarget = z.infer<typeof destinationTargetSchema>;
 export const destinationIssueSchema = z.enum(DESTINATION_ISSUE);
 export type DestinationIssue = z.infer<typeof destinationIssueSchema>;
 export const destinationMessages = DESTINATION_MESSAGES;
