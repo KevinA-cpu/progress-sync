@@ -17,7 +17,9 @@ import {
 
 export function createDeliveryService(github: GithubService, destination: DestinationService) {
   const ready = browser.storage.local.setAccessLevel({ accessLevel: STORAGE_ACCESS.trustedContexts });
-  let queue: Promise<unknown> = ready;
+  let intakeQueue: Promise<unknown> = ready;
+  let publicationQueue: Promise<unknown> = ready;
+  let storageQueue: Promise<unknown> = ready;
   const active = new Set<string>();
 
   async function jobs(): Promise<DeliveryJob[]> {
@@ -27,14 +29,18 @@ export function createDeliveryService(github: GithubService, destination: Destin
     return stored.map(job => job.state === DELIVERY_STATE.publishing && !active.has(job.id)
       ? { ...job, state: DELIVERY_STATE.uncertain, detail: DELIVERY_TEXT.interrupted } : job);
   }
-  async function save(job: DeliveryJob) {
-    const current = await jobs();
-    const index = current.findIndex(item => item.id === job.id);
-    if (index < 0) current.push(job);
-    else current[index] = job;
-    await browser.storage.local.set({
-      [DELIVERY_KEY]: parseDelivery(current, deliveryJobsSchema, DELIVERY_TEXT.invalidData),
+  function save(job: DeliveryJob): Promise<void> {
+    const operation = storageQueue.then(async () => {
+      const current = await jobs();
+      const index = current.findIndex(item => item.id === job.id);
+      if (index < 0) current.push(job);
+      else current[index] = job;
+      await browser.storage.local.set({
+        [DELIVERY_KEY]: parseDelivery(current, deliveryJobsSchema, DELIVERY_TEXT.invalidData),
+      });
     });
+    storageQueue = operation.then(() => undefined, () => undefined);
+    return operation;
   }
   async function selection(session: ConnectedSession): Promise<DeliveryTarget> {
     const journal = await destination.readJournal(session.user.id);
@@ -45,44 +51,58 @@ export function createDeliveryService(github: GithubService, destination: Destin
     const { operationId, userId, owner, name, clientId, installationId, appId, repositoryId,
       branch, connectionId, verifiedAt } = journal;
     return parseDelivery({
-      operationId, userId, owner, name, clientId, installationId, appId, repositoryId, branch, connectionId, verifiedAt,
+      operationId, userId, owner, name, clientId, installationId, appId, repositoryId, branch, connectionId,
+      selectedAt: journal.selectedAt ?? verifiedAt,
     }, deliveryTargetSchema, DELIVERY_TEXT.noDestination);
   }
-  async function deliver(attemptId: string, confirmation?: PublishRequest): Promise<void> {
-    if ((await jobs()).some(job => job.id === attemptId)) return;
+  async function assign(attemptId: string, confirmation?: PublishRequest): Promise<DeliveryJob | null> {
+    if ((await jobs()).some(job => job.id === attemptId)) return null;
     const snapshot = parseDelivery(
       (await readAttempts()).find(attempt => attempt.id === attemptId), acceptedSnapshotSchema, DELIVERY_TEXT.invalidAttempt,
     );
     if (await hashSource(snapshot.source) !== snapshot.sourceHash) throw new DeliveryFault(DELIVERY_TEXT.invalidAttempt);
-    await github.withConnection(async (session, sessionGuard, signal) => {
-      let target: DeliveryTarget;
-      try {
-        target = await selection(session);
-      } catch (error) {
-        if (!confirmation && error instanceof DeliveryFault && error.message === DELIVERY_TEXT.noDestination) return;
-        throw error;
-      }
-      if (confirmation) {
-        if (confirmation.expectedConnectionId !== target.connectionId
-          || confirmation.expectedSelectionId !== target.operationId) {
-          throw new DeliveryFault(DELIVERY_TEXT.sessionChanged);
+    try {
+      return await github.withConnection(async (session, guard) => {
+        const target = await selection(session);
+        if (confirmation) {
+          if (confirmation.expectedConnectionId !== target.connectionId
+            || confirmation.expectedSelectionId !== target.operationId) {
+            throw new DeliveryFault(DELIVERY_TEXT.sessionChanged);
+          }
+        } else if (Date.parse(target.selectedAt) > Date.parse(snapshot.submittedAt)) {
+          return null;
         }
-      } else if (Date.parse(target.verifiedAt) > Date.parse(snapshot.submittedAt)
-        || Date.parse(session.verifiedAt) > Date.parse(snapshot.submittedAt)) return;
-      async function guard() {
-        await sessionGuard();
-        const current = await selection(session);
-        if (JSON.stringify(current) !== JSON.stringify(target)) throw new DeliveryFault(DELIVERY_TEXT.sessionChanged);
-      }
-      const job: DeliveryJob = {
-        schemaVersion: 1, id: snapshot.id, snapshot, target, createdAt: new Date().toISOString(),
-        state: DELIVERY_STATE.pending, detail: null, receipt: null,
-      };
-      await guard();
-      await save(job);
-      active.add(job.id);
-      let publicationStarted = false;
-      try {
+        const job: DeliveryJob = {
+          schemaVersion: 1, id: snapshot.id, snapshot, target, createdAt: new Date().toISOString(),
+          state: DELIVERY_STATE.pending, detail: null, receipt: null,
+        };
+        await guard();
+        await save(job);
+        return job;
+      });
+    } catch (error) {
+      if (!confirmation && ((error instanceof AuthFault && error.issue === AUTH_ISSUE.notConnected)
+        || (error instanceof DeliveryFault && error.message === DELIVERY_TEXT.noDestination))) return null;
+      throw error;
+    }
+  }
+  async function publish(job: DeliveryJob): Promise<void> {
+    active.add(job.id);
+    let publicationStarted = false;
+    try {
+      await github.withConnection(async (session, sessionGuard, signal) => {
+        async function guard() {
+          await sessionGuard();
+          const current = await selection(session);
+          const target = job.target;
+          if (current.connectionId !== target.connectionId || current.operationId !== target.operationId
+            || current.userId !== target.userId || current.clientId !== target.clientId
+            || current.installationId !== target.installationId || current.appId !== target.appId
+            || current.repositoryId !== target.repositoryId || current.owner !== target.owner
+            || current.name !== target.name || current.branch !== target.branch) {
+            throw new DeliveryFault(DELIVERY_TEXT.sessionChanged);
+          }
+        }
         job.receipt = await publishAttempt(job, session, guard, signal, async () => {
           job.state = DELIVERY_STATE.publishing;
           await save(job);
@@ -90,28 +110,37 @@ export function createDeliveryService(github: GithubService, destination: Destin
         });
         job.state = DELIVERY_STATE.saved;
         await save(job);
-      } catch (error) {
-        const rejected = [400, 401, 403, 404, 409, 422].includes(status(error) ?? 0);
-        const headChanged = error instanceof DeliveryFault && error.message === DELIVERY_TEXT.headChanged;
-        const uncertain = publicationStarted && !rejected && !headChanged;
-        job.receipt = null;
-        job.state = uncertain ? DELIVERY_STATE.uncertain : DELIVERY_STATE.blocked;
-        job.detail = uncertain ? DELIVERY_TEXT.uncertain
-          : rejected ? DELIVERY_TEXT.rejected
-            : error instanceof DeliveryFault || error instanceof DestinationFault ? error.message
-              : error instanceof AuthFault ? DELIVERY_TEXT.sessionChanged : DELIVERY_TEXT.networkError;
-        await save(job);
-      } finally {
-        active.delete(job.id);
-      }
-    });
+      });
+    } catch (error) {
+      const rejected = [400, 401, 403, 404, 409, 422].includes(status(error) ?? 0);
+      const headChanged = error instanceof DeliveryFault && error.message === DELIVERY_TEXT.headChanged;
+      const uncertain = publicationStarted && !rejected && !headChanged;
+      job.receipt = null;
+      job.state = uncertain ? DELIVERY_STATE.uncertain : DELIVERY_STATE.blocked;
+      job.detail = uncertain ? DELIVERY_TEXT.uncertain
+        : rejected ? DELIVERY_TEXT.rejected
+          : error instanceof DeliveryFault || error instanceof DestinationFault ? error.message
+            : error instanceof AuthFault ? DELIVERY_TEXT.sessionChanged : DELIVERY_TEXT.networkError;
+      await save(job);
+    } finally {
+      active.delete(job.id);
+    }
   }
-  function accepted(attemptId: string): void {
-    const operation = queue.then(() => deliver(attemptId));
-    queue = operation.catch(error => {
-      if (error instanceof AuthFault && error.issue === AUTH_ISSUE.notConnected) return;
+  function intake(attemptId: string, confirmation?: PublishRequest): Promise<DeliveryJob | null> {
+    const operation = intakeQueue.then(() => assign(attemptId, confirmation));
+    intakeQueue = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+  function enqueue(job: DeliveryJob): Promise<void> {
+    const operation = publicationQueue.then(() => publish(job));
+    publicationQueue = operation.catch(() => {
       console.error(DELIVERY_TEXT.operationFailed);
     });
+    return operation;
+  }
+  async function accepted(attemptId: string): Promise<void> {
+    const job = await intake(attemptId);
+    if (job) void enqueue(job);
   }
   async function view(): Promise<DeliveryReply> {
     let target: DeliveryTarget | null = null;
@@ -140,9 +169,8 @@ export function createDeliveryService(github: GithubService, destination: Destin
         case DELIVERY_MESSAGE.list:
           return await view();
         case DELIVERY_MESSAGE.publish: {
-          const action = queue.then(() => deliver(input.attemptId, input));
-          queue = action.then(() => undefined, () => undefined);
-          await action;
+          const job = await intake(input.attemptId, input);
+          if (job) await enqueue(job);
           return await view();
         }
       }

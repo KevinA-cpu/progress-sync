@@ -31,7 +31,7 @@ export async function publishAttempt(
   const destination = destinationApi(session, guard, signal);
   const octokit = githubRest(session.token, signal);
   const repo = { owner: target.owner, repo: target.name };
-  async function read<T>(operation: () => Promise<{ data: unknown }>, schema: z.ZodType<T>): Promise<T> {
+  async function validatedCall<T>(operation: () => Promise<{ data: unknown }>, schema: z.ZodType<T>): Promise<T> {
     await guard();
     const response = await operation();
     await guard();
@@ -50,9 +50,9 @@ export async function publishAttempt(
   if (!await destination.marker(target.name, branch.commit.sha)) {
     throw new DestinationFault(DESTINATION_ISSUE.incompatibleRepository);
   }
-  const base = await read(() => octokit.rest.git.getCommit({ ...repo, commit_sha: branch.commit.sha }), gitCommitSchema);
+  const base = await validatedCall(() => octokit.rest.git.getCommit({ ...repo, commit_sha: branch.commit.sha }), gitCommitSchema);
   if (base.sha !== branch.commit.sha) throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
-  const tree = await read(() => octokit.rest.git.getTree({
+  const tree = await validatedCall(() => octokit.rest.git.getTree({
     ...repo, tree_sha: base.tree.sha, recursive: GIT_RECURSIVE,
   }), gitTreeSchema);
   if (tree.sha !== base.tree.sha) throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
@@ -75,11 +75,11 @@ export async function publishAttempt(
   ];
   await guard();
   await beforeWrite();
-  const createdTree = await read(() => octokit.rest.git.createTree({
+  const createdTree = await validatedCall(() => octokit.rest.git.createTree({
     ...repo, base_tree: base.tree.sha,
     tree: entries,
   }), gitObjectSchema);
-  const proposed = await read(() => octokit.rest.git.getTree({
+  const proposed = await validatedCall(() => octokit.rest.git.getTree({
     ...repo, tree_sha: createdTree.sha, recursive: GIT_RECURSIVE,
   }), gitTreeSchema);
   if (proposed.sha !== createdTree.sha) throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
@@ -101,7 +101,7 @@ export async function publishAttempt(
     expected.delete(entry.path);
   }
   if (expected.size !== 0) throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
-  const commit = await read(() => octokit.rest.git.createCommit({
+  const commit = await validatedCall(() => octokit.rest.git.createCommit({
     ...repo, tree: createdTree.sha, parents: [base.sha],
     message: DELIVERY_TEXT.commitMessage(snapshot.provider, snapshot.problemId, job.id),
   }), gitCommitSchema);
@@ -110,7 +110,7 @@ export async function publishAttempt(
   }
   const latest = await destination.branch(target.name, target.branch);
   if (latest.commit.sha !== base.sha) throw new DeliveryFault(DELIVERY_TEXT.headChanged);
-  const ref = await read(() => octokit.rest.git.updateRef({
+  const ref = await validatedCall(() => octokit.rest.git.updateRef({
     ...repo, ref: deliveryRef(target.branch), sha: commit.sha, force: false,
   }), gitRefSchema);
   if (ref.ref !== `refs/${deliveryRef(target.branch)}` || ref.object.sha !== commit.sha) {

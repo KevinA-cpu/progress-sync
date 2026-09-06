@@ -1,6 +1,6 @@
 import { z } from '../schema';
 import {
-  DELIVERY_MESSAGE, DELIVERY_MESSAGE_PREFIX, DELIVERY_STATE, DELIVERY_TEXT, GIT_MODE, GIT_OBJECT, MAX_TREE_ENTRIES,
+  DELIVERY_MESSAGE, DELIVERY_STATE, DELIVERY_TEXT, GIT_MODE, GIT_OBJECT, MAX_TREE_ENTRIES,
 } from '../constants/delivery';
 import { CAPTURE_PROVENANCE, CAPTURE_STATE, GRADING_VERDICT, PROGRESS_PROVIDER } from '../constants/progress';
 import { attemptSchema, problemIdSchema, submittedSourceSchema } from '../progress';
@@ -16,10 +16,10 @@ export const acceptedSnapshotSchema = attemptSchema.safeExtend({
 });
 export const deliveryTargetSchema = journalSchema.pick({
   operationId: true, userId: true, owner: true, name: true, clientId: true, installationId: true,
-  appId: true, repositoryId: true, branch: true, connectionId: true, verifiedAt: true,
+  appId: true, repositoryId: true, branch: true, connectionId: true,
 }).extend({
   owner: githubUserSchema.shape.login, clientId: clientIdSchema,
-  repositoryId: z.int().positive(), branch: branchNameSchema, verifiedAt: z.iso.datetime(),
+  repositoryId: z.int().positive(), branch: branchNameSchema, selectedAt: z.iso.datetime(),
 });
 export type DeliveryTarget = z.infer<typeof deliveryTargetSchema>;
 export const acceptanceRecordSchema = z.strictObject({
@@ -41,7 +41,6 @@ export const deliveryJobSchema = z.strictObject({
 export const deliveryJobsSchema = z.array(deliveryJobSchema)
   .refine(jobs => new Set(jobs.map(job => job.id)).size === jobs.length);
 export type DeliveryJob = z.infer<typeof deliveryJobSchema>;
-export const deliveryEnvelopeSchema = z.object({ type: z.string().startsWith(DELIVERY_MESSAGE_PREFIX) });
 export const publishRequestSchema = z.strictObject({
   type: z.literal(DELIVERY_MESSAGE.publish), attemptId: z.uuid(), expectedConnectionId: z.uuid(),
   expectedSelectionId: z.uuid(), publicConfirmed: z.literal(true),

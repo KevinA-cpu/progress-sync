@@ -237,6 +237,14 @@ App/installation/repository identities, and explicit branch. Credentials remain
 separate in session storage. The progress view distinguishes locally accepted,
 awaiting delivery, blocked, uncertain, and saved work.
 
+Durable intake does not wait behind network publication: a second accepted
+attempt is saved as its own bound job even while an earlier upload is outstanding.
+Local job updates are serialized independently to avoid losing either record.
+Rechecking an unchanged connection or destination refreshes verification without
+changing the original selection time or invalidating its consent. Actual account,
+connection, installation, repository, selection, or branch changes still block
+old jobs rather than redirecting them.
+
 Each accepted attempt adds two files:
 
 ```text

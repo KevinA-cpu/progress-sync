@@ -1,4 +1,4 @@
-import { expect, stopExtensionWorker, submittedBytes, submittedSource, test } from './fixtures';
+import { expect, stopExtensionWorker, submittedBytes, submittedSource, successPage, test } from './fixtures';
 import { CLIENT_ID, githubFixture, openConnection } from './github-fixture';
 import { destinationFixture } from './destination-fixture';
 import { publicationFixture } from './publication-fixture';
@@ -306,6 +306,64 @@ test('a later accepted attempt preserves the previously published progress', asy
   expect(server.updates).toBe(2);
   expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(4);
 });
+
+test('a second accepted attempt becomes durable while an earlier upload is still outstanding', async ({
+  extensionContext, progress, problem,
+}) => {
+  const { server } = await setup(extensionContext, progress);
+  const gate = Promise.withResolvers<void>();
+  server.writeGate = gate.promise;
+  await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
+  await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect.poll(() => server.writes.length).toBe(1);
+  await problem.getByRole('textbox', { name: 'Solution' }).fill(`// Second snapshot\n${submittedSource}`);
+  await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect(progress.getByText('Accepted - awaiting GitHub delivery', { exact: true })).toHaveCount(2);
+  await stopExtensionWorker(extensionContext, progress);
+  await progress.reload();
+  await expect(progress.getByText('Publication was interrupted.', { exact: false })).toHaveCount(1);
+  await expect(progress.getByText('Accepted - awaiting GitHub delivery', { exact: true })).toHaveCount(1);
+  const reply = await progress.evaluate(() => chrome.runtime.sendMessage({ type: 'delivery:list' }));
+  expect(reply.jobs).toHaveLength(2);
+  expect(reply.jobs.map((job: { state: string }) => job.state).sort()).toEqual(['pending', 'uncertain']);
+  expect(reply.jobs[1]).toMatchObject({
+    target: { userId: 42, repositoryId: 101, installationId: 77, branch: 'learning' },
+    snapshot: { source: `// Second snapshot\r\n${submittedBytes}` },
+  });
+  gate.resolve();
+  expect(server.writes).toHaveLength(1);
+});
+
+for (const phase of ['grading', 'publishing']) {
+  test(`re-verifying the same connection and destination during ${phase} does not change consent`, async ({
+    extensionContext, progress, problem,
+  }) => {
+    const { server, connection, page } = await setup(extensionContext, progress);
+    const gate = Promise.withResolvers<void>();
+    const submitted = Promise.withResolvers<void>();
+    if (phase === 'grading') {
+      await extensionContext.route('**/runsim.php', async route => {
+        submitted.resolve();
+        await gate.promise;
+        await route.fulfill({ contentType: 'text/html', body: successPage });
+      });
+    } else {
+      server.writeGate = gate.promise;
+    }
+    await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
+    await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+    if (phase === 'grading') await submitted.promise;
+    else await expect.poll(() => server.writes.length).toBe(1);
+    await connection.getByRole('button', { name: 'Check connection', exact: true }).click();
+    await expect(connection.getByRole('status')).toHaveText('Connected as fixture-user');
+    await page.getByRole('button', { name: 'Refresh installations', exact: true }).click();
+    await page.getByRole('button', { name: 'Verify pending or saved repository' }).click();
+    await expect(page.getByRole('status')).toHaveText('Verified destination: fixture-user/progress-solutions @ learning');
+    gate.resolve();
+    await expect(progress.getByText('Saved to GitHub', { exact: true })).toBeVisible();
+    expect(server.updates).toBe(1);
+  });
+}
 
 for (const conflict of ['source-only', 'ancestor-file']) {
   test(`a remote ${conflict} cannot be overwritten or mistaken for a complete delivery`, async ({

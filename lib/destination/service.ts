@@ -185,9 +185,12 @@ export function createDestinationService(github: GithubService) {
         throw new DestinationFault(DESTINATION_ISSUE.initializationUncertain);
       }
       await api.included(journal.installationId, repo.id);
+      const verifiedAt = new Date().toISOString();
+      const selectedAt = journal.phase === DESTINATION_PHASE.ready && journal.connectionId === session.connectionId
+        ? journal.selectedAt ?? journal.verifiedAt ?? verifiedAt : verifiedAt;
       journal = {
         ...journal, phase: DESTINATION_PHASE.ready, branch: branch.name, commitSha: branch.commit.sha,
-        verifiedAt: new Date().toISOString(), connectionId: session.connectionId,
+        verifiedAt, selectedAt, connectionId: session.connectionId,
       };
       await guard();
       await save(journal);
