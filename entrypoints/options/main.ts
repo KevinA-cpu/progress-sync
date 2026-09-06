@@ -5,7 +5,8 @@ import { progressReplySchema, type Attempt } from '../../lib/progress';
 import { DELIVERY_KEY, DELIVERY_MESSAGE, DELIVERY_STATE, DELIVERY_TEXT, deliveryCommitUrl } from '../../lib/constants/delivery';
 import { AUTH_SESSION_KEY } from '../../lib/constants/github';
 import { DESTINATION_STORAGE_PREFIX } from '../../lib/constants/destination';
-import { deliveryReplySchema, type DeliveryJob, type DeliveryTarget } from '../../lib/delivery/schemas';
+import { deliveryReplySchema, type DeliveryJob } from '../../lib/delivery/schemas';
+import type { DestinationTarget } from '../../lib/destination/schemas';
 import { initializeRecovery } from './recovery';
 import { renderMetadata, renderSource } from './fields';
 import './style.css';
@@ -15,7 +16,7 @@ const attempts = document.querySelector<HTMLElement>('#attempts');
 const refresh = document.querySelector<HTMLButtonElement>('#refresh');
 if (!status || !attempts || !refresh) throw new Error(PROGRESS_TEXT.interfaceIncomplete);
 
-function renderAttempt(attempt: Attempt, selection: DeliveryTarget | null, job?: DeliveryJob): HTMLElement {
+function renderAttempt(attempt: Attempt, selection: DestinationTarget | null, job?: DeliveryJob): HTMLElement {
   const article = document.createElement('article');
   const heading = document.createElement('h2');
   heading.textContent = PROGRESS_TEXT.problemHeading(attempt.problemId);

@@ -6,13 +6,13 @@ import { AUTH_ISSUE } from '../constants/github';
 import { hashSource, readAttempts } from '../progress';
 import { AuthFault } from '../github/schemas';
 import type { GithubService } from '../github/service';
-import { DestinationFault } from '../destination/schemas';
+import { DestinationFault, type DestinationTarget } from '../destination/schemas';
 import type { DestinationService } from '../destination/service';
 import { githubResponseStatus, GithubWriteRejected } from '../github/errors';
 import { publishAttempt } from './api';
 import {
   acceptedSnapshotSchema, DeliveryFault, deliveryJobsSchema, deliveryRequestSchema,
-  parseDelivery, type DeliveryJob, type DeliveryReply, type DeliveryTarget, type PublishRequest,
+  parseDelivery, type DeliveryJob, type DeliveryReply, type PublishRequest,
 } from './schemas';
 
 export function createDeliveryService(github: GithubService, destination: DestinationService) {
@@ -129,7 +129,7 @@ export function createDeliveryService(github: GithubService, destination: Destin
     }
   }
   async function view(): Promise<DeliveryReply> {
-    let target: DeliveryTarget | null = null;
+    let target: DestinationTarget | null = null;
     try {
       target = await github.withConnection(async (session, guard) => {
         const current = await destination.selection(session);

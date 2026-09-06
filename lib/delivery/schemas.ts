@@ -13,8 +13,6 @@ export const acceptedSnapshotSchema = attemptSchema.safeExtend({
   state: z.literal(CAPTURE_STATE.accepted), problemId: problemIdSchema, source: submittedSourceSchema,
   sourceHash: sourceHashSchema, observedAt: z.iso.datetime(),
 });
-export const deliveryTargetSchema = destinationTargetSchema;
-export type DeliveryTarget = z.infer<typeof deliveryTargetSchema>;
 export const acceptanceRecordSchema = z.strictObject({
   schemaVersion: z.literal(1), provider: z.literal(PROGRESS_PROVIDER), problemId: problemIdSchema,
   attemptId: z.uuid(), sourceHash: sourceHashSchema,
@@ -25,7 +23,7 @@ export const deliveryReceiptSchema = z.strictObject({
   commitSha: gitShaSchema, treeSha: gitShaSchema, confirmedAt: z.iso.datetime(),
 });
 export const deliveryJobSchema = z.strictObject({
-  schemaVersion: z.literal(1), id: z.uuid(), snapshot: acceptedSnapshotSchema, target: deliveryTargetSchema,
+  schemaVersion: z.literal(1), id: z.uuid(), snapshot: acceptedSnapshotSchema, target: destinationTargetSchema,
   createdAt: z.iso.datetime(), state: z.enum(DELIVERY_STATE), detail: z.string().nullable(),
   receipt: deliveryReceiptSchema.nullable(),
 }).refine(job => job.id === job.snapshot.id
@@ -43,7 +41,7 @@ export const deliveryRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal(DELIVERY_MESSAGE.list) }), publishRequestSchema,
 ]);
 export const deliveryReplySchema = z.discriminatedUnion('ok', [
-  z.strictObject({ ok: z.literal(true), jobs: deliveryJobsSchema, selection: deliveryTargetSchema.nullable() }),
+  z.strictObject({ ok: z.literal(true), jobs: deliveryJobsSchema, selection: destinationTargetSchema.nullable() }),
   z.strictObject({ ok: z.literal(false), error: z.string() }),
 ]);
 export type DeliveryReply = z.infer<typeof deliveryReplySchema>;
