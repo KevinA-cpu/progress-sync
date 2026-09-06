@@ -138,9 +138,15 @@ export function createDeliveryService(github: GithubService, destination: Destin
     });
     return operation;
   }
-  async function accepted(attemptId: string): Promise<void> {
-    const job = await intake(attemptId);
-    if (job) void enqueue(job);
+  async function accepted(attemptId: string): Promise<string | null> {
+    try {
+      const job = await intake(attemptId);
+      if (job) void enqueue(job);
+      return null;
+    } catch {
+      console.error(DELIVERY_TEXT.operationFailed);
+      return DELIVERY_TEXT.intakeFailed;
+    }
   }
   async function view(): Promise<DeliveryReply> {
     let target: DeliveryTarget | null = null;

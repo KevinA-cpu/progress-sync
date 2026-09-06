@@ -244,6 +244,8 @@ Rechecking an unchanged connection or destination refreshes verification without
 changing the original selection time or invalidating its consent. Actual account,
 connection, installation, repository, selection, or branch changes still block
 old jobs rather than redirecting them.
+An intake failure is recorded on its local accepted attempt; it does not disable
+subsequent capture or progress reads. No publication starts without the job write.
 
 Each accepted attempt adds two files:
 

@@ -73,6 +73,46 @@ test('an accepted guest submission publishes exact source and metadata in one co
   expect(server.updates).toBe(1);
 });
 
+test('disconnect during durable intake does not poison later guest capture', async ({
+  extensionContext, progress, problem,
+}) => {
+  const { server, connection } = await setup(extensionContext, progress);
+  const progressUrl = progress.url();
+  await progress.close();
+  const worker = extensionContext.serviceWorkers()[0];
+  if (!worker) throw new Error('Expected the active extension worker.');
+  await worker.evaluate(() => {
+    const original = chrome.storage.local.get.bind(chrome.storage.local);
+    chrome.storage.local.get = new Proxy(original, {
+      async apply(target, receiver, args) {
+        const stored: unknown = await Reflect.apply(target, receiver, args);
+        if (args[0] === 'destination-v1:42') {
+          chrome.storage.local.get = original;
+          await new Promise<void>(resolve => { Reflect.set(globalThis, 'releaseIntakeRead', resolve); });
+        }
+        return stored;
+      },
+    });
+  });
+  await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
+  await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect.poll(() => worker.evaluate(() => Reflect.has(globalThis, 'releaseIntakeRead'))).toBe(true);
+  await connection.getByRole('button', { name: 'Disconnect GitHub' }).click();
+  await expect(connection.getByRole('status')).toHaveText('Not connected to GitHub.');
+  await worker.evaluate(() => {
+    const release: unknown = Reflect.get(globalThis, 'releaseIntakeRead');
+    if (typeof release !== 'function') throw new Error('Missing intake storage gate.');
+    release();
+  });
+  const restored = await extensionContext.newPage();
+  await restored.goto(progressUrl);
+  await expect(restored.getByText('Accepted locally - delivery assignment blocked.', { exact: false })).toBeVisible();
+  await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect(restored.getByRole('status')).toHaveText('2 captured attempts.');
+  await expect(restored.getByText('Accepted locally - not saved to GitHub', { exact: true })).toHaveCount(1);
+  expect(server.writes).toEqual([]);
+});
+
 test('an older local attempt requires an explicit public destination selection', async ({
   extensionContext, progress, problem,
 }) => {
@@ -332,6 +372,35 @@ test('a second accepted attempt becomes durable while an earlier upload is still
   });
   gate.resolve();
   expect(server.writes).toHaveLength(1);
+});
+
+test('a delivery-intake failure remains visible without disabling local capture', async ({
+  extensionContext, progress, problem,
+}) => {
+  const { server } = await setup(extensionContext, progress);
+  const worker = extensionContext.serviceWorkers()[0];
+  if (!worker) throw new Error('Expected the active extension worker.');
+  await worker.evaluate(() => {
+    const original = chrome.storage.local.set.bind(chrome.storage.local);
+    chrome.storage.local.set = async items => {
+      if (Object.hasOwn(items, 'delivery-jobs-v1')) {
+        chrome.storage.local.set = original;
+        throw new Error('Synthetic delivery-only storage failure');
+      }
+      return original(items);
+    };
+  });
+  await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
+  await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect(progress.getByText('Accepted locally - delivery assignment blocked.', { exact: false })).toBeVisible();
+  expect(server.writes).toEqual([]);
+  await progress.reload();
+  await expect(progress.getByText('Accepted locally - delivery assignment blocked.', { exact: false })).toBeVisible();
+  await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect(progress.getByRole('status')).toHaveText('2 captured attempts.');
+  await expect(progress.getByText('Saved to GitHub', { exact: true })).toHaveCount(1);
+  await expect(progress.getByText('Accepted locally - delivery assignment blocked.', { exact: false })).toHaveCount(1);
+  expect(server.updates).toBe(1);
 });
 
 for (const phase of ['grading', 'publishing']) {

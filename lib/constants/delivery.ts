@@ -29,6 +29,7 @@ export const DELIVERY_TEXT = {
   uncertain: 'Publication outcome is uncertain. Inspect GitHub; this job will not be retried automatically.',
   interrupted: 'Publication was interrupted. Its outcome is uncertain; no automatic retry was made.',
   operationFailed: 'Progress Sync: delivery operation did not complete.',
+  intakeFailed: 'Accepted locally - delivery assignment blocked. No upload was started. Refresh the connection and destination, then explicitly select this attempt again.',
   blocked: (detail: string) => `Delivery blocked: ${detail}`,
   target: (owner: string, name: string, branch: string) => `Destination: ${owner}/${name} @ ${branch}`,
   select: (owner: string, name: string, branch: string) =>
