@@ -33,7 +33,7 @@ export function createDestinationService(github: GithubService) {
   }
   async function selection(session: ConnectedSession): Promise<DestinationTarget> {
     const journal = await readJournal(session.user.id);
-    if (!journal || journal.phase !== DESTINATION_PHASE.ready || journal.connectionId !== session.connectionId
+    if (!journal || journal.accessPaused || journal.phase !== DESTINATION_PHASE.ready || journal.connectionId !== session.connectionId
       || journal.clientId !== session.clientId || journal.owner !== session.user.login) {
       throw new DestinationFault(DESTINATION_ISSUE.selectionRequired);
     }
@@ -52,6 +52,30 @@ export function createDestinationService(github: GithubService) {
       || !sameDestination(current, target)) {
       throw new DestinationFault(DESTINATION_ISSUE.sessionChanged);
     }
+  }
+  async function pauseAfterFailure(target: DestinationTarget, error: unknown): Promise<void> {
+    let accessLost = false;
+    if (error instanceof DestinationFault) {
+      switch (error.issue) {
+        case DESTINATION_ISSUE.permissionDenied:
+        case DESTINATION_ISSUE.repositoryNotIncluded:
+        case DESTINATION_ISSUE.repositoryChanged:
+        case DESTINATION_ISSUE.branchUnavailable:
+        case DESTINATION_ISSUE.incompatibleRepository:
+          accessLost = true;
+          break;
+      }
+    }
+    const status = error instanceof GithubWriteRejected ? error.status : githubResponseStatus(error);
+    if (!accessLost && status !== GITHUB_HTTP_STATUS.forbidden && status !== GITHUB_HTTP_STATUS.notFound) return;
+    const operation = queue.then(async () => {
+      const journal = await readJournal(target.userId);
+      if (journal?.connectionId === target.connectionId && journal.operationId === target.operationId) {
+        await save({ ...journal, accessPaused: true });
+      }
+    });
+    queue = operation.then(() => undefined, () => undefined);
+    await operation;
   }
   function choose(installations: Installation[], id: number, creating: boolean) {
     const installation = installations.find(item => item.id === id);
@@ -213,7 +237,7 @@ export function createDestinationService(github: GithubService) {
         ? journal.selectedAt ?? journal.verifiedAt ?? verifiedAt : verifiedAt;
       journal = {
         ...journal, phase: DESTINATION_PHASE.ready, branch: branch.name, commitSha: branch.commit.sha,
-        verifiedAt, selectedAt, connectionId: session.connectionId,
+        verifiedAt, selectedAt, connectionId: session.connectionId, accessPaused: false,
       };
       await guard();
       await save(journal);
@@ -235,7 +259,7 @@ export function createDestinationService(github: GithubService) {
       return { ok: false, error: DESTINATION_ISSUE.networkError };
     }
   }
-  return { message, selection, guardSelection };
+  return { message, selection, guardSelection, pauseAfterFailure };
 }
 
 export type DestinationService = ReturnType<typeof createDestinationService>;

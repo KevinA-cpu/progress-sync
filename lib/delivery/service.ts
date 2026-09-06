@@ -1,9 +1,10 @@
 import { browser, type Browser } from 'wxt/browser';
 import { EXTENSION_PAGE, STORAGE_ACCESS } from '../constants/browser';
 import { DESTINATION_ISSUE } from '../constants/destination';
-import { DELIVERY_KEY, DELIVERY_MESSAGE, DELIVERY_STATE, DELIVERY_TEXT } from '../constants/delivery';
+import { DELIVERY_KEY, DELIVERY_MESSAGE, DELIVERY_STATE, DELIVERY_TEXT, DISCARDED_DELIVERY_KEY } from '../constants/delivery';
+import { PROGRESS_KEY } from '../constants/progress';
 import { AUTH_ISSUE } from '../constants/github';
-import { hashSource, readAttempts } from '../progress';
+import { attemptListSchema, hashSource, readAttempts, type Attempt } from '../progress';
 import { AuthFault } from '../github/schemas';
 import type { GithubService } from '../github/service';
 import { DestinationFault, sameDestination, type DestinationTarget } from '../destination/schemas';
@@ -11,17 +12,25 @@ import type { DestinationService } from '../destination/service';
 import { githubResponseStatus, GithubWriteRejected } from '../github/errors';
 import { publishAttempt, reconcileAttempt } from './api';
 import {
-  acceptedSnapshotSchema, DeliveryBlocked, DeliveryFault, deliveryJobsSchema, deliveryRequestSchema,
+  acceptedSnapshotSchema, DeliveryBlocked, DeliveryFault, deliveryJobsSchema, deliveryRequestSchema, discardedDeliveryIdsSchema,
   parseDelivery, type DeliveryJob, type DeliveryReply, type PublicationCandidate, type PublishRequest, type RetryRequest,
 } from './schemas';
 
-export function createDeliveryService(github: GithubService, destination: DestinationService) {
+export function createDeliveryService(
+  github: GithubService, destination: DestinationService,
+  discardCapture: (id: string, persist: (remaining: Attempt[]) => Promise<void>) => Promise<void>,
+) {
   const ready = browser.storage.local.setAccessLevel({ accessLevel: STORAGE_ACCESS.trustedContexts });
   let intakeQueue: Promise<unknown> = ready;
   let publicationQueue: Promise<unknown> = ready;
   let storageQueue: Promise<unknown> = ready;
   const active = new Set<string>();
+  const discarding = new Set<string>();
 
+  async function discardedIds(): Promise<string[]> {
+    const stored: unknown = (await browser.storage.local.get(DISCARDED_DELIVERY_KEY))[DISCARDED_DELIVERY_KEY];
+    return parseDelivery(stored === undefined ? [] : stored, discardedDeliveryIdsSchema, DELIVERY_TEXT.invalidData);
+  }
   async function jobs(): Promise<DeliveryJob[]> {
     await ready;
     const value: unknown = (await browser.storage.local.get(DELIVERY_KEY))[DELIVERY_KEY];
@@ -31,6 +40,7 @@ export function createDeliveryService(github: GithubService, destination: Destin
   }
   function save(job: DeliveryJob): Promise<void> {
     const operation = storageQueue.then(async () => {
+      if ((await discardedIds()).includes(job.id)) throw new DeliveryFault(DELIVERY_TEXT.discarded);
       const current = await jobs();
       const index = current.findIndex(item => item.id === job.id);
       if (index < 0) current.push(job);
@@ -43,6 +53,9 @@ export function createDeliveryService(github: GithubService, destination: Destin
     return operation;
   }
   async function assign(attemptId: string, confirmation?: PublishRequest): Promise<DeliveryJob | null> {
+    if (discarding.has(attemptId) || (await discardedIds()).includes(attemptId)) {
+      throw new DeliveryFault(DELIVERY_TEXT.discarded);
+    }
     if ((await jobs()).some(job => job.id === attemptId)) return null;
     const snapshot = parseDelivery(
       (await readAttempts()).find(attempt => attempt.id === attemptId), acceptedSnapshotSchema, DELIVERY_TEXT.invalidAttempt,
@@ -75,19 +88,25 @@ export function createDeliveryService(github: GithubService, destination: Destin
   }
   async function publish(job: DeliveryJob, retry?: RetryRequest): Promise<void> {
     if (job.state === DELIVERY_STATE.saved) return;
+    const discarded = await discardedIds();
+    if (discarding.has(job.id) || discarded.includes(job.id)) {
+      throw new DeliveryFault(DELIVERY_TEXT.discarded);
+    }
     const wasUncertain = job.state === DELIVERY_STATE.uncertain;
     active.add(job.id);
     let publicationStarted = false;
+    let selected: DestinationTarget | null = null;
     try {
       await github.withConnection(async (session, sessionGuard, signal) => {
-        const selected = retry ? await destination.selection(session) : job.target;
-        if (retry && (retry.expectedConnectionId !== selected.connectionId
-          || retry.expectedSelectionId !== selected.operationId || !sameDestination(selected, job.target))) {
+        const current = retry ? await destination.selection(session) : job.target;
+        if (retry && (retry.expectedConnectionId !== current.connectionId
+          || retry.expectedSelectionId !== current.operationId || !sameDestination(current, job.target))) {
           throw new DeliveryBlocked(DELIVERY_TEXT.sessionChanged);
         }
+        selected = current;
         async function guard() {
           await sessionGuard();
-          await destination.guardSelection(session, selected);
+          await destination.guardSelection(session, current);
         }
         if (await hashSource(job.snapshot.source) !== job.snapshot.sourceHash) {
           throw new DeliveryBlocked(DELIVERY_TEXT.invalidAttempt);
@@ -129,6 +148,7 @@ export function createDeliveryService(github: GithubService, destination: Destin
             : githubResponseStatus(error) !== null ? DELIVERY_TEXT.requestFailed
               : error instanceof AuthFault ? DELIVERY_TEXT.sessionChanged : DELIVERY_TEXT.networkError;
       await save(job);
+      if (selected) await destination.pauseAfterFailure(selected, error);
     } finally {
       active.delete(job.id);
     }
@@ -141,6 +161,7 @@ export function createDeliveryService(github: GithubService, destination: Destin
   function enqueue(jobId: string, retry?: RetryRequest): Promise<void> {
     const operation = publicationQueue.then(async () => {
       const job = (await jobs()).find(item => item.id === jobId);
+      if (!job && (await discardedIds()).includes(jobId)) return;
       if (!job) throw new DeliveryFault(DELIVERY_TEXT.invalidInput);
       await publish(job, retry);
     });
@@ -173,6 +194,31 @@ export function createDeliveryService(github: GithubService, destination: Destin
     }
     return { ok: true, jobs: await jobs(), selection: target };
   }
+  async function discard(jobId: string): Promise<void> {
+    if (active.has(jobId) || discarding.has(jobId)) throw new DeliveryFault(DELIVERY_TEXT.discardActive);
+    discarding.add(jobId);
+    try {
+      await discardCapture(jobId, remaining => {
+        const operation = storageQueue.then(async () => {
+          if (active.has(jobId)) throw new DeliveryFault(DELIVERY_TEXT.discardActive);
+          const current = await jobs();
+          const job = current.find(item => item.id === jobId);
+          if (!job) throw new DeliveryFault(DELIVERY_TEXT.invalidInput);
+          if (job.state === DELIVERY_STATE.saved) throw new DeliveryFault(DELIVERY_TEXT.discardSaved);
+          const discarded = await discardedIds();
+          await browser.storage.local.set({
+            [PROGRESS_KEY]: attemptListSchema.parse(remaining),
+            [DELIVERY_KEY]: deliveryJobsSchema.parse(current.filter(item => item.id !== jobId)),
+            [DISCARDED_DELIVERY_KEY]: discardedDeliveryIdsSchema.parse([...discarded, jobId]),
+          });
+        });
+        storageQueue = operation.then(() => undefined, () => undefined);
+        return operation;
+      });
+    } finally {
+      discarding.delete(jobId);
+    }
+  }
   async function message(value: unknown, sender: Browser.runtime.MessageSender): Promise<DeliveryReply> {
     if (sender.id !== browser.runtime.id || sender.url !== browser.runtime.getURL(EXTENSION_PAGE.options)
       || sender.frameId !== 0 || !sender.documentId || sender.tab?.id === undefined) {
@@ -192,6 +238,9 @@ export function createDeliveryService(github: GithubService, destination: Destin
         }
         case DELIVERY_MESSAGE.retry:
           await enqueue(input.jobId, input);
+          return await view();
+        case DELIVERY_MESSAGE.discard:
+          await discard(input.jobId);
           return await view();
       }
     } catch (error) {

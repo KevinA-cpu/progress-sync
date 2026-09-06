@@ -5,8 +5,11 @@ import { progressReplySchema, type Attempt } from '../../lib/progress';
 import { DELIVERY_KEY, DELIVERY_MESSAGE, DELIVERY_STATE, DELIVERY_TEXT, deliveryCommitUrl } from '../../lib/constants/delivery';
 import { AUTH_SESSION_KEY } from '../../lib/constants/github';
 import { DESTINATION_STORAGE_PREFIX } from '../../lib/constants/destination';
-import { deliveryReplySchema, type DeliveryJob, type PublishRequest, type RetryRequest } from '../../lib/delivery/schemas';
-import type { DestinationTarget } from '../../lib/destination/schemas';
+import { LIFECYCLE_TEXT } from '../../lib/constants/lifecycle';
+import {
+  deliveryReplySchema, type DeliveryJob, type DiscardRequest, type PublishRequest, type RetryRequest,
+} from '../../lib/delivery/schemas';
+import { sameDestination, type DestinationTarget } from '../../lib/destination/schemas';
 import { initializeRecovery } from './recovery';
 import { renderMetadata, renderSource } from './fields';
 import './style.css';
@@ -15,23 +18,31 @@ const status = document.querySelector<HTMLParagraphElement>('#status');
 const attempts = document.querySelector<HTMLElement>('#attempts');
 const refresh = document.querySelector<HTMLButtonElement>('#refresh');
 if (!status || !attempts || !refresh) throw new Error(PROGRESS_TEXT.interfaceIncomplete);
+let loadGeneration = 0;
 
 async function deliveryAction(
-  button: HTMLButtonElement, state: HTMLElement, request: PublishRequest | RetryRequest,
+  button: HTMLButtonElement, state: HTMLElement, request: PublishRequest | RetryRequest | DiscardRequest,
+  generation: number,
 ): Promise<void> {
-  button.disabled = true;
+  if (generation !== loadGeneration || !button.isConnected || button.disabled) return;
+  const controls = [...button.parentElement?.querySelectorAll('button') ?? []].filter(control => !control.disabled);
+  controls.forEach(control => { control.disabled = true; });
   try {
     const reply = deliveryReplySchema.parse(await browser.runtime.sendMessage(request));
+    if (generation !== loadGeneration || !button.isConnected) return;
     if (!reply.ok) throw new Error(reply.error);
     await load();
   } catch (error) {
+    if (generation !== loadGeneration || !button.isConnected) return;
     state.textContent = error instanceof Error ? error.message : DELIVERY_TEXT.operationFailed;
     state.setAttribute('role', UI_ROLE.alert);
-    button.disabled = false;
+    controls.forEach(control => { control.disabled = false; });
   }
 }
 
-function renderAttempt(attempt: Attempt, selection: DestinationTarget | null, job?: DeliveryJob): HTMLElement {
+function renderAttempt(
+  attempt: Attempt, selection: DestinationTarget | null, generation: number, job?: DeliveryJob,
+): HTMLElement {
   const article = document.createElement('article');
   const heading = document.createElement('h2');
   heading.textContent = PROGRESS_TEXT.problemHeading(attempt.problemId);
@@ -67,9 +78,16 @@ function renderAttempt(attempt: Attempt, selection: DestinationTarget | null, jo
   };
   article.append(heading, state, renderMetadata(values));
   if (job) {
+    const account = document.createElement('p');
+    account.textContent = LIFECYCLE_TEXT.originalAccount(job.target.owner, job.target.userId);
     const destination = document.createElement('p');
     destination.textContent = DELIVERY_TEXT.target(job.target.owner, job.target.name, job.target.branch);
-    article.append(destination);
+    article.append(account, destination, renderMetadata({
+      [LIFECYCLE_TEXT.appLabel]: String(job.target.appId),
+      [LIFECYCLE_TEXT.clientLabel]: job.target.clientId,
+      [LIFECYCLE_TEXT.installationLabel]: String(job.target.installationId),
+      [LIFECYCLE_TEXT.repositoryLabel]: String(job.target.repositoryId),
+    }));
     if (job.receipt) {
       const receipt = document.createElement('a');
       receipt.textContent = DELIVERY_TEXT.commit(job.receipt.commitSha);
@@ -79,24 +97,45 @@ function renderAttempt(attempt: Attempt, selection: DestinationTarget | null, jo
       article.append(receipt);
     }
     if (job.state !== DELIVERY_STATE.saved) {
+      const operationActive = job.state === DELIVERY_STATE.publishing || job.state === DELIVERY_STATE.reconciling;
+      const compatible = selection !== null && sameDestination(selection, job.target);
+      if (!compatible) {
+        const guidance = document.createElement('p');
+        guidance.textContent = selection ? LIFECYCLE_TEXT.destinationChanged : LIFECYCLE_TEXT.reconnect;
+        article.append(guidance);
+      }
+      if (operationActive) {
+        const guidance = document.createElement('p');
+        guidance.textContent = LIFECYCLE_TEXT.operationActive;
+        article.append(guidance);
+      }
       const retry = document.createElement('button');
+      retry.type = 'button';
       retry.textContent = DELIVERY_TEXT.retry;
-      retry.disabled = !selection || job.state === DELIVERY_STATE.publishing || job.state === DELIVERY_STATE.reconciling;
+      retry.disabled = !compatible || operationActive;
       retry.addEventListener(DOM_EVENT.click, async () => {
-        if (!selection) {
-          state.textContent = DELIVERY_TEXT.noDestination;
-          return;
-        }
+        if (!selection || !compatible || operationActive) return;
         await deliveryAction(retry, state, {
           type: DELIVERY_MESSAGE.retry, jobId: job.id,
           expectedConnectionId: selection.connectionId, expectedSelectionId: selection.operationId,
-        });
+        }, generation);
       });
-      article.append(retry);
+      const discard = document.createElement('button');
+      discard.type = 'button';
+      discard.textContent = LIFECYCLE_TEXT.discard;
+      discard.disabled = operationActive;
+      discard.addEventListener(DOM_EVENT.click, async () => {
+        if (generation !== loadGeneration || !discard.isConnected || discard.disabled) return;
+        if (!window.confirm(LIFECYCLE_TEXT.discardConfirmation(job.id))) return;
+        await deliveryAction(discard, state, {
+          type: DELIVERY_MESSAGE.discard, jobId: job.id, localConfirmed: true,
+        }, generation);
+      });
+      article.append(retry, discard);
     }
   }
   if (attempt.source !== null) {
-    article.append(renderSource(PROGRESS_TEXT.submittedSource, attempt.source));
+    article.append(renderSource(LIFECYCLE_TEXT.submittedSource, attempt.source));
   }
   if (attempt.state === CAPTURE_STATE.accepted && !job) {
     if (selection) {
@@ -106,7 +145,7 @@ function renderAttempt(attempt: Attempt, selection: DestinationTarget | null, jo
         await deliveryAction(publish, state, {
           type: DELIVERY_MESSAGE.publish, attemptId: attempt.id, expectedConnectionId: selection.connectionId,
           expectedSelectionId: selection.operationId, publicConfirmed: true,
-        });
+        }, generation);
       });
       article.append(publish);
     } else {
@@ -118,10 +157,10 @@ function renderAttempt(attempt: Attempt, selection: DestinationTarget | null, jo
   return article;
 }
 
-let loadGeneration = 0;
 async function load(): Promise<void> {
   const generation = ++loadGeneration;
   if (!status || !attempts) throw new Error(PROGRESS_TEXT.interfaceIncomplete);
+  attempts.querySelectorAll('button').forEach(button => { button.disabled = true; });
   try {
     const parsed = progressReplySchema.safeParse(
       await browser.runtime.sendMessage({ type: PROGRESS_MESSAGE.list }),
@@ -132,11 +171,15 @@ async function load(): Promise<void> {
     const delivery = deliveryReplySchema.parse(await browser.runtime.sendMessage({ type: DELIVERY_MESSAGE.list }));
     if (!delivery.ok) throw new Error(delivery.error);
     if (generation !== loadGeneration) return;
-    attempts.replaceChildren(...[...reply.attempts].reverse().map(attempt =>
-      renderAttempt(attempt, delivery.selection, delivery.jobs.find(job => job.id === attempt.id))));
-    status.textContent = reply.attempts.length === 0
+    const jobs = new Map(delivery.jobs.map(job => [job.id, job]));
+    const snapshots = new Map(reply.attempts.map(attempt => [attempt.id, attempt]));
+    for (const job of delivery.jobs) snapshots.set(job.id, job.snapshot);
+    const ordered = [...snapshots.values()].sort((left, right) => right.submittedAt.localeCompare(left.submittedAt));
+    attempts.replaceChildren(...ordered.map(attempt =>
+      renderAttempt(attempt, delivery.selection, generation, jobs.get(attempt.id))));
+    status.textContent = snapshots.size === 0
       ? PROGRESS_TEXT.empty
-      : PROGRESS_TEXT.attemptCount(reply.attempts.length);
+      : PROGRESS_TEXT.attemptCount(snapshots.size);
     status.setAttribute('role', UI_ROLE.status);
   } catch (error) {
     if (generation !== loadGeneration) return;

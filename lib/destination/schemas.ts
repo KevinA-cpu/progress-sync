@@ -46,6 +46,7 @@ export const journalSchema = z.strictObject({
   initializationAuthorized: z.boolean(),
   branch: branchNameSchema.nullable(), verifiedAt: z.iso.datetime().nullable(),
   selectedAt: z.iso.datetime().optional(),
+  accessPaused: z.boolean().optional(),
   connectionId: z.uuid(), commitSha: z.string().nullable(),
 });
 export type DestinationJournal = z.infer<typeof journalSchema>;

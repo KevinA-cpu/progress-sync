@@ -288,8 +288,8 @@ for (const stage of ['tree', 'commit', 'ref'] as const) {
       await progress.evaluate(async () => {
         const view = await chrome.runtime.sendMessage({ type: 'delivery:list' });
         await chrome.runtime.sendMessage({
-          type: 'delivery:publish', attemptId: view.jobs[0].id, expectedConnectionId: view.selection.connectionId,
-          expectedSelectionId: view.selection.operationId, publicConfirmed: true,
+          type: 'delivery:publish', attemptId: view.jobs[0].id, expectedConnectionId: view.jobs[0].target.connectionId,
+          expectedSelectionId: view.jobs[0].target.operationId, publicConfirmed: true,
         });
       });
       expect(server.writes).toHaveLength(before);
@@ -511,7 +511,7 @@ for (const conflict of ['source-only', 'ancestor-file']) {
 test('publication rechecks permissions and repository identity after onboarding', async ({
   extensionContext, progress, problem,
 }) => {
-  const { server, target } = await setup(extensionContext, progress);
+  const { server, target, page } = await setup(extensionContext, progress);
   target.contentsWrite = false;
   await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
@@ -520,6 +520,8 @@ test('publication rechecks permissions and repository identity after onboarding'
   await expect(progress.getByRole('textbox', { name: 'Submitted source' })).toHaveValue(submittedSource);
 
   target.contentsWrite = true;
+  await page.getByRole('button', { name: 'Verify pending or saved repository' }).click();
+  await expect(page.getByRole('status')).toContainText('Verified destination:');
   target.repositoryId = 202;
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(progress.getByText('Delivery blocked: The repository identity, owner, or visibility changed.', { exact: false })).toBeVisible();

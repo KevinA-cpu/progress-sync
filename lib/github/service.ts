@@ -1,6 +1,6 @@
 import { EXTENSION_PAGE, FETCH_POLICY, STORAGE_ACCESS } from '../constants/browser';
 import {
-  AUTH_EXPIRY_ALARM, AUTH_ISSUE, AUTH_MESSAGE, AUTH_SESSION_KEY, AUTH_STATUS, AUTH_TEXT,
+  AUTH_EXPIRY_ALARM, AUTH_ISSUE, AUTH_MESSAGE, AUTH_SESSION_KEY, AUTH_STATUS, AUTH_TEXT, GITHUB_HTTP_STATUS,
 } from '../constants/github';
 import { browser, type Browser } from 'wxt/browser';
 import {
@@ -8,6 +8,7 @@ import {
   type AuthIssue, type AuthReply, type AuthSession, type AuthState, type ConnectedSession,
 } from './schemas';
 import { githubRest } from './rest';
+import { githubResponseStatus, GithubWriteRejected } from './errors';
 
 async function loadConfig(): Promise<{ clientId: string } | { issue: AuthIssue }> {
   let response: Response;
@@ -283,6 +284,18 @@ export function createGithubService() {
     try {
       await guard();
       return await action(session, guard, controller.signal);
+    } catch (error) {
+      const status = error instanceof GithubWriteRejected ? error.status : githubResponseStatus(error);
+      if (status === GITHUB_HTTP_STATUS.unauthorized) {
+        await serialize(async () => {
+          const latest = await read();
+          if (latest.status === AUTH_STATUS.connected && latest.connectionId === session.connectionId) {
+            for (const request of requests.values()) request.abort();
+            await store({ status: AUTH_STATUS.disconnected, issue: AUTH_ISSUE.authorizationRejected });
+          }
+        });
+      }
+      throw error;
     } finally {
       requests.delete(requestId);
     }

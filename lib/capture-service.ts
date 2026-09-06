@@ -288,5 +288,17 @@ export function createCaptureService(onAccepted: (attemptId: string) => Promise<
     });
   }
 
-  return { request, committed, completed, interrupted, message, reportFailure };
+  function discardAccepted(id: string, persist: (remaining: Attempt[]) => Promise<void>): Promise<void> {
+    const result = queue.then(async () => {
+      if (failure) throw new Error(failure);
+      const remaining = attempts.filter(attempt => attempt.id !== id);
+      await persist(remaining);
+      attempts = remaining;
+    });
+    // A rejected discard must not disable later capture.
+    queue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  return { request, committed, completed, interrupted, message, reportFailure, discardAccepted };
 }

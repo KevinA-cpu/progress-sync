@@ -23,7 +23,7 @@ const messageEnvelopeSchema = z.object({ type: z.string() });
 export default defineBackground(() => {
   const github = createGithubService();
   const destination = createDestinationService(github);
-  const delivery = createDeliveryService(github, destination);
+  const delivery = createDeliveryService(github, destination, (id, persist) => capture.discardAccepted(id, persist));
   const recovery = createRecoveryService(github, destination);
   const capture = createCaptureService(delivery.accepted);
   const requests = { urls: [GRADING_URL], types: [RESOURCE_TYPE.mainFrame, RESOURCE_TYPE.subFrame] as const };

@@ -8,8 +8,9 @@ These slices implement [ticket #2](https://github.com/KevinA-cpu/progress-sync/i
 [ticket #3](https://github.com/KevinA-cpu/progress-sync/issues/3),
 [ticket #4](https://github.com/KevinA-cpu/progress-sync/issues/4),
 [ticket #5](https://github.com/KevinA-cpu/progress-sync/issues/5),
-[ticket #6](https://github.com/KevinA-cpu/progress-sync/issues/6), and
-[ticket #7](https://github.com/KevinA-cpu/progress-sync/issues/7).
+[ticket #6](https://github.com/KevinA-cpu/progress-sync/issues/6),
+[ticket #7](https://github.com/KevinA-cpu/progress-sync/issues/7), and
+[ticket #8](https://github.com/KevinA-cpu/progress-sync/issues/8).
 **Automatic queue draining and conflict rebasing are not implemented yet.**
 
 HDLBits login is not required. The extension's progress is separate from HDLBits'
@@ -36,6 +37,7 @@ pnpm test -- destination.spec.ts
 pnpm test -- publication.spec.ts
 pnpm test -- recovery.spec.ts
 pnpm test -- reconciliation.spec.ts
+pnpm test -- lifecycle.spec.ts
 ```
 
 After a build, tests can be rerun without rebuilding:
@@ -83,6 +85,8 @@ Runtime strings are grouped by domain under [lib/constants](lib/constants):
   constrained messages, and delivery diagnostics.
 - [Recovery constants](lib/constants/recovery.ts): read-only recovery messages,
   cache states, file limits, and stable warning codes.
+- [Lifecycle constants](lib/constants/lifecycle.ts): retained-work identity,
+  destination-mismatch guidance, and local-discard confirmation.
 
 Zod schemas and runtime switches consume the same literal-valued constant
 objects. Existing wire values, storage keys, and UI messages are unchanged.
@@ -171,6 +175,11 @@ guidance without claiming a valid connection.
   Browser restart requires reconnection. **Check connection** revalidates the
   identity and clears rejected/revoked credentials; the displayed verification
   time is not a promise that a token cannot subsequently be revoked.
+- An actual GitHub 401 response during a connected operation also clears that
+  session's credential. A late rejection cannot clear a newer connection.
+  Lost required repository access pauses the selected destination until explicit
+  verification succeeds again. A 403 may also mean rate limiting or policy denial;
+  the UI does not claim it proves credential revocation.
 - Cancellation and disconnect invalidate the owning attempt. Late responses
   cannot restore it. Disconnect clears local credentials, not GitHub-side App
   authorization or local HDLBits records. Revoke App access separately on GitHub.
@@ -331,6 +340,35 @@ same inspected head, never a silently refreshed or rebased head. Competing late
 reference requests cannot both fast-forward different publication commits.
 Removed or inconsistent historical records stay blocked. History requests retain
 fixed repository/path/branch parameters rather than following response-provided URLs.
+
+## Retained work and local discard
+
+Disconnect and browser restart remove session credentials, not captured attempts,
+delivery jobs, receipts, or recovered-progress caches. Retained jobs remain visible
+with their original GitHub account ID, App installation, repository ID, and branch.
+Selecting another account or destination does not rewrite those bindings. Reconnect
+and explicitly verify the original destination before checking GitHub and retrying.
+That check revalidates identity, installation membership, required permissions, and
+the branch; the UI's last verification is not a guarantee of continuing access.
+
+**Discard local attempt** requires confirmation and removes an unresolved delivery
+job and its local captured source together. This cannot be undone: an unsaved
+snapshot and its delivery checkpoint can no longer be recovered from this device.
+A source-free attempt-ID tombstone prevents stale requests from publishing the
+discarded attempt again. Other captures and independently recovered GitHub records
+are not removed. Saved receipts are not discarded by this pending-work action.
+If delivery is active, wait for it to settle or disconnect first, then discard.
+Storage failure leaves the attempt retained and reports the failure.
+
+Local discard does not make GitHub requests or delete remote files. Disconnect
+cannot undo a request already sent: it may have completed remotely even if the
+extension never received confirmation. Such jobs remain unresolved until checked
+against their original destination, or explicitly discarded with that warning.
+
+Local disconnect is also not GitHub-side revocation. Use GitHub settings to
+[revoke an authorized GitHub App](https://github.com/settings/apps/authorizations)
+or [manage installed GitHub Apps and repository access](https://github.com/settings/installations).
+GitHub website login alone grants no API authority to the extension.
 
 ## Recover saved progress
 
@@ -497,6 +535,12 @@ session-bound consent. They create no real repository or GitHub content.
 Publication tests extend that boundary with immutable Git trees/commits and a
 non-force branch update. They run real onboarding, capture, and publication and
 check exact remote files together with the visible receipt or failure state.
+
+Lifecycle tests exercise retained jobs through expiry, rejected authorization,
+access repair, account/repository/branch switches, delayed authorization and
+reference responses, and a real browser restart. Local-discard tests cover
+confirmation, credential/source removal, failed storage, active and queued jobs,
+stale requests, and preservation of remote contents.
 
 Recovery tests close the original browser and launch a fresh profile without
 copying local storage or credentials. They reconnect through the real extension
