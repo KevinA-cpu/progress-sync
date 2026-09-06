@@ -58,6 +58,7 @@ export function createDestinationService(github: GithubService) {
     if (error instanceof DestinationFault) {
       switch (error.issue) {
         case DESTINATION_ISSUE.permissionDenied:
+        case DESTINATION_ISSUE.installationRequired:
         case DESTINATION_ISSUE.repositoryNotIncluded:
         case DESTINATION_ISSUE.repositoryChanged:
         case DESTINATION_ISSUE.branchUnavailable:

@@ -223,8 +223,6 @@ for (const change of ['repository', 'branch'] as const) {
               return route.fulfill({ json: {
                 name: 'learning', commit: { sha: 'c'.repeat(40) }, protected: false,
               } });
-            case `${base}/git/commits/${'c'.repeat(40)}`:
-              return route.fulfill({ status: 404, json: { message: 'Commit not available in this controlled repository.' } });
             case `${base}/contents/.progress-sync.json`:
               expect(['learning', 'c'.repeat(40)]).toContain(url.searchParams.get('ref'));
               return route.fulfill({ json: {
@@ -253,6 +251,16 @@ for (const change of ['repository', 'branch'] as const) {
         });
         break;
     }
+    const selectedBase = `/repos/fixture-user/${selectedName}`;
+    await extensionContext.route(url => url.origin === 'https://api.github.com'
+      && (url.pathname === `${selectedBase}/git/commits/${'c'.repeat(40)}`
+        || url.pathname === `${selectedBase}/git/trees/${'d'.repeat(40)}`), async route => {
+      expect(route.request().method()).toBe('GET');
+      const commit = new URL(route.request().url()).pathname.includes('/git/commits/');
+      await route.fulfill({ json: commit
+        ? { sha: 'c'.repeat(40), tree: { sha: 'd'.repeat(40) }, parents: [] }
+        : { sha: 'd'.repeat(40), tree: [], truncated: false } });
+    });
     const requests = await observeApi(extensionContext);
     const writes = server.writes.length;
     await page.getByLabel('Repository name', { exact: true }).fill(selectedName);
@@ -265,7 +273,7 @@ for (const change of ['repository', 'branch'] as const) {
     expect(changed.selection).toMatchObject({ name: selectedName, branch: selectedBranch, repositoryId: selectedRepositoryId });
     if (!changed.selection) throw new Error('Expected the changed destination to be selected.');
     await expect(progress.getByRole('region', { name: 'Saved progress from GitHub' }).getByText(
-      'Saved progress could not be recovered. Check access and connection, then refresh saved progress.', { exact: true },
+      '0 recorded accepted; 0 unverified saved entries.', { exact: true },
     )).toBeVisible();
     expect(requests.every(request => request.method === 'GET')).toBe(true);
     const inspected = requests.length;
