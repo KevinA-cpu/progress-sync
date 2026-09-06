@@ -322,6 +322,26 @@ test('network failures are actionable without exposing request details', async (
   expect(server.identityRequests).toBe(0);
 });
 
+test('typed identity requests reject redirects instead of forwarding credentials', async ({
+  extensionContext, progress,
+}) => {
+  await githubFixture(extensionContext);
+  let redirectedRequests = 0;
+  await extensionContext.route('https://unexpected.invalid/**', async route => {
+    redirectedRequests++;
+    await route.fulfill({ json: { id: 42, login: 'fixture-user' } });
+  });
+  await extensionContext.route('https://api.github.com/user', route => route.fulfill({
+    status: 302, headers: { location: 'https://unexpected.invalid/user' },
+  }));
+  const connection = await openConnection(extensionContext, progress);
+  await connection.getByRole('button', { name: 'Connect GitHub', exact: true }).click();
+
+  await expect(connection.getByRole('status')).toHaveText('GitHub identity could not be verified. Connect again.');
+  expect(redirectedRequests).toBe(0);
+  expect((await credentialSummary(connection)).accessInSession).toBe(false);
+});
+
 test('checking a revoked connection clears its credential', async ({
   extensionContext, progress,
 }) => {

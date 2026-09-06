@@ -120,6 +120,12 @@ guidance without claiming a valid connection.
 - API calls omit website cookies, reject redirects, and are limited to the
   required GitHub authorization, user, installation, and repository operations. No client secret, App private
   key, broad OAuth `repo` scope, or general-purpose GitHub proxy is used.
+- REST operations use named, typed Octokit methods from `@octokit/core` and
+  `@octokit/plugin-rest-endpoint-methods`, including repository creation, branch
+  and content reads, installation checks, and authenticated identity. The SDK
+  builds endpoint URLs and encodes parameters; Zod still validates responses.
+  The shared restricted transport and session checks remain in effect. No retry
+  or throttling plugin is installed: uncertain writes must not be replayed.
 - Session expiry is checked before credential use and scheduled with an alarm.
   Browser restart requires reconnection. **Check connection** revalidates the
   identity and clears rejected/revoked credentials; the displayed verification
@@ -144,6 +150,10 @@ actual branch. It follows installation/repository pagination and never silently
 expands installation access. If a newly created repository is not included,
 use **Manage App installation access**, select that repository on GitHub, and
 choose **Verify pending or saved repository**.
+
+Pagination calls the typed list methods with an explicit page number, a 100-page
+bound, response validation, and session checks on every request. It does not
+automatically follow URLs supplied in response headers.
 
 The version-1 `.progress-sync.json` marker identifies a compatible repository.
 It contains `kind: "progress-sync"`, `schemaVersion: 1`, and a UUID

@@ -5,7 +5,6 @@ export const AUTH_EXPIRY_ALARM = 'github-connection-expiry';
 export const DEVICE_CODE_URL = 'https://github.com/login/device/code';
 export const TOKEN_URL = 'https://github.com/login/oauth/access_token';
 export const VERIFICATION_URL = 'https://github.com/login/device';
-export const USER_URL = 'https://api.github.com/user';
 
 export const issueSchema = z.enum([
   'not-connected', 'configuration-required', 'configuration-invalid', 'configuration-unavailable',

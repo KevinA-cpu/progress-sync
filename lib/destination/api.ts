@@ -1,6 +1,6 @@
 import { z } from '../schema';
-import { AuthFault, USER_URL, githubUserResponseSchema, type ConnectedSession } from '../github/schemas';
-import { githubRequest } from '../github/transport';
+import { AuthFault, githubUserResponseSchema, type ConnectedSession } from '../github/schemas';
+import { githubRest } from '../github/rest';
 import {
   DestinationFault, branchSchema, httpStatusSchema, installationSchema, markerSchema,
   repositorySchema, MARKER_PATH, type Installation, type Repository,
@@ -9,29 +9,33 @@ import {
 export function destinationApi(
   session: ConnectedSession, guard: () => Promise<void>, signal: AbortSignal,
 ) {
-  async function call(method: 'GET' | 'POST' | 'PUT', path: string, body?: object) {
+  const octokit = githubRest(session.token, signal);
+  function repositoryParameters(name: string) {
+    return { owner: session.user.login, repo: name };
+  }
+  async function call<T>(operation: () => Promise<T>): Promise<T> {
     await guard();
-    const url = `https://api.github.com${path}`;
-    const request = githubRequest([url], signal);
-    const response = await request({ method, url, headers: { authorization: `token ${session.token}` }, ...body });
+    const response = await operation();
     await guard();
     return response;
   }
-  async function read<T>(path: string, schema: z.ZodType<T>): Promise<T> {
-    const response = await call('GET', path);
+  async function read<T>(operation: () => Promise<{ data: unknown }>, schema: z.ZodType<T>): Promise<T> {
+    const response = await call(operation);
     const parsed = schema.safeParse(response.data);
     if (!parsed.success) throw new DestinationFault('invalid-response');
     return parsed.data;
   }
   async function identity() {
-    const user = await read(new URL(USER_URL).pathname, githubUserResponseSchema);
+    const user = await read(() => octokit.rest.users.getAuthenticated(), githubUserResponseSchema);
     if (user.id !== session.user.id || user.login !== session.user.login) throw new AuthFault('not-allowed');
     return user;
   }
   async function installations(): Promise<Installation[]> {
     const items: Installation[] = [];
     for (let page = 1; page <= 100; page++) {
-      const response = await read(`/user/installations?per_page=100&page=${page}`, z.object({
+      const response = await read(() => octokit.rest.apps.listInstallationsForAuthenticatedUser({
+        per_page: 100, page,
+      }), z.object({
         total_count: z.int().nonnegative(), installations: z.array(installationSchema),
       }));
       items.push(...response.installations);
@@ -44,11 +48,8 @@ export function destinationApi(
     }
     throw new DestinationFault('invalid-response');
   }
-  function base(name: string) {
-    return `/repos/${encodeURIComponent(session.user.login)}/${encodeURIComponent(name)}`;
-  }
   async function repository(name: string): Promise<Repository> {
-    const repo = await read(base(name), repositorySchema);
+    const repo = await read(() => octokit.rest.repos.get(repositoryParameters(name)), repositorySchema);
     if (repo.owner.id !== session.user.id || repo.owner.type !== 'User'
       || repo.name.toLowerCase() !== name.toLowerCase() || repo.private) {
       throw new DestinationFault('repository-changed');
@@ -59,7 +60,9 @@ export function destinationApi(
   async function included(installationId: number, repositoryId: number) {
     let seen = 0;
     for (let page = 1; page <= 100; page++) {
-      const response = await read(`/user/installations/${installationId}/repositories?per_page=100&page=${page}`, z.object({
+      const response = await read(() => octokit.rest.apps.listInstallationReposForAuthenticatedUser({
+        installation_id: installationId, per_page: 100, page,
+      }), z.object({
         total_count: z.int().nonnegative(), repositories: z.array(z.object({ id: z.int().positive() })),
       }));
       if (response.repositories.some(repo => repo.id === repositoryId)) return;
@@ -70,12 +73,16 @@ export function destinationApi(
     throw new DestinationFault('invalid-response');
   }
   async function empty(name: string) {
-    const branches = await read(`${base(name)}/branches?per_page=1`, z.array(z.object({ name: z.string() })));
+    const branches = await read(() => octokit.rest.repos.listBranches({
+      ...repositoryParameters(name), per_page: 1,
+    }), z.array(z.object({ name: z.string() })));
     return branches.length === 0;
   }
   async function branch(name: string, branchName: string) {
     try {
-      const branch = await read(`${base(name)}/branches/${encodeURIComponent(branchName)}`, branchSchema);
+      const branch = await read(() => octokit.rest.repos.getBranch({
+        ...repositoryParameters(name), branch: branchName,
+      }), branchSchema);
       if (branch.name !== branchName) throw new DestinationFault('branch-unavailable');
       return branch;
     } catch (error) {
@@ -86,7 +93,9 @@ export function destinationApi(
   async function marker(name: string, ref: string) {
     let file;
     try {
-      file = await read(`${base(name)}/contents/${MARKER_PATH}?ref=${encodeURIComponent(ref)}`, z.object({
+      file = await read(() => octokit.rest.repos.getContent({
+        ...repositoryParameters(name), path: MARKER_PATH, ref,
+      }), z.object({
         type: z.literal('file'), encoding: z.literal('base64'), content: z.string().max(16_384),
       }));
     } catch (error) {
@@ -104,16 +113,17 @@ export function destinationApi(
     return parsed.data;
   }
   async function initialize(name: string, branchName: string | null, operationId: string) {
-    await call('PUT', `${base(name)}/contents/${MARKER_PATH}`, {
+    await call(() => octokit.rest.repos.createOrUpdateFileContents({
+      ...repositoryParameters(name), path: MARKER_PATH,
       message: 'Initialize Progress Sync repository',
       content: btoa(JSON.stringify({ kind: 'progress-sync', schemaVersion: 1, initializationId: operationId }, null, 2) + '\n'),
       ...(branchName === null ? {} : { branch: branchName }),
-    });
+    }));
   }
   async function create(name: string) {
-    const response = await call('POST', '/user/repos', {
+    const response = await call(() => octokit.rest.repos.createForAuthenticatedUser({
       name, private: false, auto_init: true, description: 'Progress Sync solutions and recorded progress',
-    });
+    }));
     const parsed = repositorySchema.safeParse(response.data);
     if (response.status !== 201 || !parsed.success) throw new DestinationFault('invalid-response');
     return parsed.data;

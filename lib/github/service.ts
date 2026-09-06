@@ -1,10 +1,10 @@
 import { browser, type Browser } from 'wxt/browser';
 import {
-  AUTH_EXPIRY_ALARM, AUTH_SESSION_KEY, USER_URL, appConfigSchema, authRequestSchema,
+  AUTH_EXPIRY_ALARM, AUTH_SESSION_KEY, appConfigSchema, authRequestSchema,
   AuthFault, githubUserResponseSchema, sessionSchema,
   type AuthIssue, type AuthReply, type AuthSession, type AuthState, type ConnectedSession,
 } from './schemas';
-import { githubRequest } from './transport';
+import { githubRest } from './rest';
 
 async function loadConfig(): Promise<{ clientId: string } | { issue: AuthIssue }> {
   let response: Response;
@@ -106,8 +106,8 @@ export function createGithubService() {
   }
 
   async function verifyIdentity(token: string, signal: AbortSignal) {
-    const request = githubRequest([USER_URL], signal);
-    const response = await request('GET /user', { headers: { authorization: `token ${token}` } });
+    const octokit = githubRest(token, signal);
+    const response = await octokit.rest.users.getAuthenticated();
     const parsed = githubUserResponseSchema.safeParse(response.data);
     if (!parsed.success) throw new Error('GitHub identity response is invalid.');
     return parsed.data;
