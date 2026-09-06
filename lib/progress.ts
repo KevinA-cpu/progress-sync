@@ -1,8 +1,5 @@
 import { browser } from 'wxt/browser';
-import { z } from 'zod';
-
-// Manifest V3 forbids eval-based schema compilation.
-z.config({ jitless: true });
+import { z } from './schema';
 
 export const PROGRESS_KEY = 'attempts-v1';
 export const HDL_ORIGIN = 'https://hdlbits.01xz.net';
