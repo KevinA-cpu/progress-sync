@@ -6,13 +6,13 @@ import { AUTH_ISSUE } from '../constants/github';
 import { hashSource, readAttempts } from '../progress';
 import { AuthFault } from '../github/schemas';
 import type { GithubService } from '../github/service';
-import { DestinationFault, type DestinationTarget } from '../destination/schemas';
+import { DestinationFault, sameDestination, type DestinationTarget } from '../destination/schemas';
 import type { DestinationService } from '../destination/service';
 import { githubResponseStatus, GithubWriteRejected } from '../github/errors';
-import { publishAttempt } from './api';
+import { publishAttempt, reconcileAttempt } from './api';
 import {
-  acceptedSnapshotSchema, DeliveryFault, deliveryJobsSchema, deliveryRequestSchema,
-  parseDelivery, type DeliveryJob, type DeliveryReply, type PublishRequest,
+  acceptedSnapshotSchema, DeliveryBlocked, DeliveryFault, deliveryJobsSchema, deliveryRequestSchema,
+  parseDelivery, type DeliveryJob, type DeliveryReply, type PublicationCandidate, type PublishRequest, type RetryRequest,
 } from './schemas';
 
 export function createDeliveryService(github: GithubService, destination: DestinationService) {
@@ -26,7 +26,7 @@ export function createDeliveryService(github: GithubService, destination: Destin
     await ready;
     const value: unknown = (await browser.storage.local.get(DELIVERY_KEY))[DELIVERY_KEY];
     const stored = value === undefined ? [] : parseDelivery(value, deliveryJobsSchema, DELIVERY_TEXT.invalidData);
-    return stored.map(job => job.state === DELIVERY_STATE.publishing && !active.has(job.id)
+    return stored.map(job => (job.state === DELIVERY_STATE.publishing || job.state === DELIVERY_STATE.reconciling) && !active.has(job.id)
       ? { ...job, state: DELIVERY_STATE.uncertain, detail: DELIVERY_TEXT.interrupted } : job);
   }
   function save(job: DeliveryJob): Promise<void> {
@@ -61,7 +61,7 @@ export function createDeliveryService(github: GithubService, destination: Destin
         }
         const job: DeliveryJob = {
           schemaVersion: 1, id: snapshot.id, snapshot, target, createdAt: new Date().toISOString(),
-          state: DELIVERY_STATE.pending, detail: null, receipt: null,
+          state: DELIVERY_STATE.pending, detail: null, receipt: null, candidate: null,
         };
         await guard();
         await save(job);
@@ -73,30 +73,57 @@ export function createDeliveryService(github: GithubService, destination: Destin
       throw error;
     }
   }
-  async function publish(job: DeliveryJob): Promise<void> {
+  async function publish(job: DeliveryJob, retry?: RetryRequest): Promise<void> {
+    if (job.state === DELIVERY_STATE.saved) return;
+    const wasUncertain = job.state === DELIVERY_STATE.uncertain;
     active.add(job.id);
     let publicationStarted = false;
     try {
       await github.withConnection(async (session, sessionGuard, signal) => {
+        const selected = retry ? await destination.selection(session) : job.target;
+        if (retry && (retry.expectedConnectionId !== selected.connectionId
+          || retry.expectedSelectionId !== selected.operationId || !sameDestination(selected, job.target))) {
+          throw new DeliveryBlocked(DELIVERY_TEXT.sessionChanged);
+        }
         async function guard() {
           await sessionGuard();
-          await destination.guardSelection(session, job.target);
+          await destination.guardSelection(session, selected);
         }
-        job.receipt = await publishAttempt(job, session, guard, signal, async () => {
-          job.state = DELIVERY_STATE.publishing;
+        if (await hashSource(job.snapshot.source) !== job.snapshot.sourceHash) {
+          throw new DeliveryBlocked(DELIVERY_TEXT.invalidAttempt);
+        }
+        const hooks = {
+          async beforeWrite() {
+            job.state = DELIVERY_STATE.publishing;
+            job.detail = null;
+            await save(job);
+            publicationStarted = true;
+          },
+          async prepared(candidate: PublicationCandidate) {
+            job.candidate = candidate;
+            await save(job);
+          },
+        };
+        job.detail = null;
+        if (retry) {
+          job.state = DELIVERY_STATE.reconciling;
+          await guard();
           await save(job);
-          publicationStarted = true;
-        });
+          job.receipt = await reconcileAttempt(job, session, guard, signal, hooks);
+        } else {
+          job.receipt = await publishAttempt(job, session, guard, signal, hooks);
+        }
         job.state = DELIVERY_STATE.saved;
         await save(job);
       });
     } catch (error) {
       const rejected = error instanceof GithubWriteRejected;
       const headChanged = error instanceof DeliveryFault && error.message === DELIVERY_TEXT.headChanged;
-      const uncertain = publicationStarted && !rejected && !headChanged;
+      const uncertain = !(error instanceof DeliveryBlocked) && !headChanged
+        && (wasUncertain || (publicationStarted && !rejected));
       job.receipt = null;
       job.state = uncertain ? DELIVERY_STATE.uncertain : DELIVERY_STATE.blocked;
-      job.detail = uncertain ? DELIVERY_TEXT.uncertain
+      job.detail = uncertain ? retry && !publicationStarted ? DELIVERY_TEXT.reconciliationFailed : DELIVERY_TEXT.uncertain
         : rejected ? DELIVERY_TEXT.rejected
           : error instanceof DeliveryFault || error instanceof DestinationFault ? error.message
             : githubResponseStatus(error) !== null ? DELIVERY_TEXT.requestFailed
@@ -111,8 +138,12 @@ export function createDeliveryService(github: GithubService, destination: Destin
     intakeQueue = operation.then(() => undefined, () => undefined);
     return operation;
   }
-  function enqueue(job: DeliveryJob): Promise<void> {
-    const operation = publicationQueue.then(() => publish(job));
+  function enqueue(jobId: string, retry?: RetryRequest): Promise<void> {
+    const operation = publicationQueue.then(async () => {
+      const job = (await jobs()).find(item => item.id === jobId);
+      if (!job) throw new DeliveryFault(DELIVERY_TEXT.invalidInput);
+      await publish(job, retry);
+    });
     publicationQueue = operation.catch(() => {
       console.error(DELIVERY_TEXT.operationFailed);
     });
@@ -121,7 +152,7 @@ export function createDeliveryService(github: GithubService, destination: Destin
   async function accepted(attemptId: string): Promise<string | null> {
     try {
       const job = await intake(attemptId);
-      if (job) void enqueue(job);
+      if (job) void enqueue(job.id);
       return null;
     } catch {
       console.error(DELIVERY_TEXT.operationFailed);
@@ -156,9 +187,12 @@ export function createDeliveryService(github: GithubService, destination: Destin
           return await view();
         case DELIVERY_MESSAGE.publish: {
           const job = await intake(input.attemptId, input);
-          if (job) await enqueue(job);
+          if (job) await enqueue(job.id);
           return await view();
         }
+        case DELIVERY_MESSAGE.retry:
+          await enqueue(input.jobId, input);
+          return await view();
       }
     } catch (error) {
       return { ok: false, error: error instanceof DeliveryFault || error instanceof DestinationFault ? error.message

@@ -57,6 +57,12 @@ export const destinationTargetSchema = journalSchema.pick({
   repositoryId: z.int().positive(), branch: branchNameSchema, selectedAt: z.iso.datetime(),
 });
 export type DestinationTarget = z.infer<typeof destinationTargetSchema>;
+export function sameDestination(left: DestinationTarget, right: DestinationTarget): boolean {
+  return left.userId === right.userId && left.clientId === right.clientId
+    && left.installationId === right.installationId && left.appId === right.appId
+    && left.repositoryId === right.repositoryId && left.branch === right.branch
+    && left.owner.toLowerCase() === right.owner.toLowerCase() && left.name.toLowerCase() === right.name.toLowerCase();
+}
 export const destinationIssueSchema = z.enum(DESTINATION_ISSUE);
 export type DestinationIssue = z.infer<typeof destinationIssueSchema>;
 export const destinationMessages = DESTINATION_MESSAGES;

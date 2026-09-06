@@ -11,7 +11,7 @@ import { destinationApi } from './api';
 import { githubResponseStatus, GithubWriteRejected } from '../github/errors';
 import {
   DestinationFault, destinationRequestSchema, journalSchema, type DestinationJournal,
-  destinationTargetSchema, type DestinationReply, type DestinationTarget, type DestinationView, type Installation,
+  destinationTargetSchema, sameDestination, type DestinationReply, type DestinationTarget, type DestinationView, type Installation,
 } from './schemas';
 
 export function createDestinationService(github: GithubService) {
@@ -49,10 +49,7 @@ export function createDestinationService(github: GithubService) {
   async function guardSelection(session: ConnectedSession, target: DestinationTarget): Promise<void> {
     const current = await selection(session);
     if (current.connectionId !== target.connectionId || current.operationId !== target.operationId
-      || current.userId !== target.userId || current.clientId !== target.clientId
-      || current.installationId !== target.installationId || current.appId !== target.appId
-      || current.repositoryId !== target.repositoryId || current.owner !== target.owner
-      || current.name !== target.name || current.branch !== target.branch) {
+      || !sameDestination(current, target)) {
       throw new DestinationFault(DESTINATION_ISSUE.sessionChanged);
     }
   }

@@ -7,9 +7,10 @@ restores saved progress in another browser.
 These slices implement [ticket #2](https://github.com/KevinA-cpu/progress-sync/issues/2),
 [ticket #3](https://github.com/KevinA-cpu/progress-sync/issues/3),
 [ticket #4](https://github.com/KevinA-cpu/progress-sync/issues/4),
-[ticket #5](https://github.com/KevinA-cpu/progress-sync/issues/5), and
-[ticket #6](https://github.com/KevinA-cpu/progress-sync/issues/6).
-**Automatic retries and uncertain-write reconciliation are not implemented yet.**
+[ticket #5](https://github.com/KevinA-cpu/progress-sync/issues/5),
+[ticket #6](https://github.com/KevinA-cpu/progress-sync/issues/6), and
+[ticket #7](https://github.com/KevinA-cpu/progress-sync/issues/7).
+**Automatic queue draining and conflict rebasing are not implemented yet.**
 
 HDLBits login is not required. The extension's progress is separate from HDLBits'
 official completion state.
@@ -34,6 +35,7 @@ pnpm test -- github.spec.ts
 pnpm test -- destination.spec.ts
 pnpm test -- publication.spec.ts
 pnpm test -- recovery.spec.ts
+pnpm test -- reconciliation.spec.ts
 ```
 
 After a build, tests can be rerun without rebuilding:
@@ -154,7 +156,8 @@ guidance without claiming a valid connection.
   and content reads, installation checks, and authenticated identity. The SDK
   builds endpoint URLs and encodes parameters; Zod still validates responses.
   The shared restricted transport and session checks remain in effect. No retry
-  or throttling plugin is installed: uncertain writes must not be replayed.
+  or throttling plugin is installed: uncertain writes require explicit
+  reconciliation before any replay.
 - Write errors are classified at the individual Octokit mutation boundary using
   its official `RequestError` type and actual HTTP response, not an arbitrary
   exception's `status` field. A client-error response (4xx, except request timeout
@@ -292,8 +295,42 @@ intact. Lost responses and interrupted publication remain uncertain and are not
 automatically retried or called successful, even if GitHub may have applied the
 update. Worker/browser restart does not erase these jobs. Creating Git objects
 can leave unreferenced objects if a later step fails; only the final branch update
-makes the complete commit visible on the selected branch. Repair/reconciliation,
-and retry scheduling are later tickets.
+makes the complete commit visible on the selected branch. Automatic retry
+scheduling and conflict rebasing are later tickets.
+
+### Check GitHub and retry delivery
+
+For retained pending, blocked, or uncertain jobs, **Check GitHub and retry
+delivery** first inspects the complete expected solution and acceptance metadata
+at the original destination. It never treats matching source alone as success,
+and never uses the current editor or an unverified import as accepted work.
+Metadata values must match the retained record; harmless JSON whitespace or key
+ordering changes are allowed, but unknown or changed fields are not.
+
+New jobs record a prepared commit checkpoint before requesting a branch update.
+If that complete commit is already on the intended branch, reconciliation
+recovers its receipt without another publication. If a reference request did not
+complete, retry reuses the exact prepared commit instead of creating a second
+visible commit. A late original response and a repeated reference update therefore
+converge on the same commit.
+
+Retries retain the original snapshot, account, App installation, repository, and
+branch. A newly verified session for that same destination can retry explicitly;
+a different destination cannot redirect the job. Repeated retry requests are
+serialized and re-read the durable job before acting.
+
+Incomplete or inconsistent remote records stay blocked without overwriting them.
+A changed branch that cannot accept the prepared commit non-destructively is
+also blocked; retry does not force-push or silently rebase. Read failures remain
+visible and retained, with no automatic retry loop.
+
+For older jobs without a prepared-commit checkpoint, a bounded metadata-path
+history search can recover the original atomic introduction. If both the current
+record and its history are absent, retry prepares the complete record from that
+same inspected head, never a silently refreshed or rebased head. Competing late
+reference requests cannot both fast-forward different publication commits.
+Removed or inconsistent historical records stay blocked. History requests retain
+fixed repository/path/branch parameters rather than following response-provided URLs.
 
 ## Recover saved progress
 

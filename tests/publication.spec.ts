@@ -1,31 +1,12 @@
 import { expect, stopExtensionWorker, submittedBytes, submittedSource, successPage, test } from './fixtures';
-import { CLIENT_ID, githubFixture, openConnection } from './github-fixture';
-import { destinationFixture } from './destination-fixture';
-import { publicationFixture } from './publication-fixture';
-import type { BrowserContext, Page } from '@playwright/test';
+import { CLIENT_ID } from './github-fixture';
+import { setup } from './publication-setup';
 import type { Browser } from 'wxt/browser';
 import { createHash } from 'node:crypto';
 
 declare const chrome: typeof Browser;
 
 test.use({ githubClientId: CLIENT_ID });
-
-async function setup(context: BrowserContext, progress: Page) {
-  const auth = await githubFixture(context);
-  const destination = await destinationFixture(context);
-  const server = await publicationFixture(context, destination);
-  const connection = await openConnection(context, progress);
-  await connection.getByRole('button', { name: 'Connect GitHub', exact: true }).click();
-  await expect(connection.getByRole('status')).toHaveText('Connected as fixture-user');
-  const [page] = await Promise.all([
-    context.waitForEvent('page'),
-    connection.getByRole('link', { name: 'Set up progress repository' }).click(),
-  ]);
-  await page.getByLabel('I understand this repository will be public').check();
-  await page.getByRole('button', { name: 'Create public repository', exact: true }).click();
-  await expect(page.getByRole('status')).toHaveText('Verified destination: fixture-user/progress-solutions @ learning');
-  return { auth, destination, server, connection, page };
-}
 
 test('an accepted guest submission publishes exact source and metadata in one complete commit', async ({
   extensionContext, progress, problem,
@@ -161,8 +142,8 @@ test('a job is durable before the first write and survives interrupted publicati
 test('Unicode source keeps its submitted UTF-8 bytes on a nonstandard branch', async ({
   extensionContext, progress, problem,
 }) => {
-  const { server, destination, page } = await setup(extensionContext, progress);
-  destination.defaultBranch = 'practice/verilog';
+  const { server, target, page } = await setup(extensionContext, progress);
+  target.defaultBranch = 'practice/verilog';
   await page.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('Verified destination: fixture-user/progress-solutions @ practice/verilog');
   const source = `// ${String.fromCodePoint(0x03bb, 0x1f680)}\n${submittedSource}`;
@@ -530,16 +511,16 @@ for (const conflict of ['source-only', 'ancestor-file']) {
 test('publication rechecks permissions and repository identity after onboarding', async ({
   extensionContext, progress, problem,
 }) => {
-  const { server, destination } = await setup(extensionContext, progress);
-  destination.contentsWrite = false;
+  const { server, target } = await setup(extensionContext, progress);
+  target.contentsWrite = false;
   await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(progress.getByText('Delivery blocked: Repository writing', { exact: false })).toBeVisible();
   expect(server.writes).toEqual([]);
   await expect(progress.getByRole('textbox', { name: 'Submitted source' })).toHaveValue(submittedSource);
 
-  destination.contentsWrite = true;
-  destination.repositoryId = 202;
+  target.contentsWrite = true;
+  target.repositoryId = 202;
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(progress.getByText('Delivery blocked: The repository identity, owner, or visibility changed.', { exact: false })).toBeVisible();
   expect(server.writes).toEqual([]);
