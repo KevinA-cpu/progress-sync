@@ -87,4 +87,3 @@ export const destinationReplySchema = z.discriminatedUnion('ok', [
   z.strictObject({ ok: z.literal(false), error: destinationIssueSchema }),
 ]);
 export type DestinationReply = z.infer<typeof destinationReplySchema>;
-export const httpStatusSchema = z.object({ status: z.number() });

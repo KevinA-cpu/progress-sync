@@ -3,11 +3,12 @@ import {
   DESTINATION_ISSUE, DESTINATION_MESSAGE, DESTINATION_PHASE, DESTINATION_STORAGE_PREFIX,
   DESTINATION_TEXT,
 } from '../constants/destination';
-import { AUTH_ISSUE, GITHUB_PERMISSION } from '../constants/github';
+import { AUTH_ISSUE, GITHUB_HTTP_STATUS, GITHUB_PERMISSION } from '../constants/github';
 import { browser, type Browser } from 'wxt/browser';
 import type { GithubService } from '../github/service';
 import { AuthFault, type ConnectedSession } from '../github/schemas';
-import { destinationApi, status } from './api';
+import { destinationApi } from './api';
+import { githubResponseStatus, GithubWriteRejected } from '../github/errors';
 import {
   DestinationFault, destinationRequestSchema, journalSchema, type DestinationJournal,
   type DestinationReply, type DestinationView, type Installation,
@@ -84,7 +85,7 @@ export function createDestinationService(github: GithubService) {
             await api.repository(input.name);
             throw new DestinationFault(DESTINATION_ISSUE.nameCollision);
           } catch (error) {
-            if (status(error) !== 404) throw error;
+            if (githubResponseStatus(error) !== GITHUB_HTTP_STATUS.notFound) throw error;
           }
           journal = journalFor(session, installation, input.name);
           journal.initializationAuthorized = true;
@@ -100,9 +101,9 @@ export function createDestinationService(github: GithubService) {
             journal.phase = DESTINATION_PHASE.created;
             await save(journal);
           } catch (error) {
-            if ([401, 403, 422].includes(status(error) ?? 0)) {
+            if (error instanceof GithubWriteRejected) {
               await browser.storage.local.remove(key(user.id));
-              throw new DestinationFault(status(error) === 422 ? DESTINATION_ISSUE.nameCollision : DESTINATION_ISSUE.permissionDenied);
+              throw new DestinationFault(DESTINATION_ISSUE.creationRejected);
             }
             throw new DestinationFault(DESTINATION_ISSUE.creationUncertain);
           }
@@ -168,7 +169,7 @@ export function createDestinationService(github: GithubService) {
         try {
           await api.initialize(journal.name, journal.branch, journal.operationId);
         } catch (error) {
-          if ([400, 401, 403, 404, 409, 422].includes(status(error) ?? 0)) {
+          if (error instanceof GithubWriteRejected) {
             journal.phase = DESTINATION_PHASE.initializationRejected;
             await save(journal);
             throw new DestinationFault(DESTINATION_ISSUE.initializationRejected);
@@ -204,7 +205,10 @@ export function createDestinationService(github: GithubService) {
       if (error instanceof AuthFault) {
         return { ok: false, error: error.issue === AUTH_ISSUE.notConnected ? DESTINATION_ISSUE.notConnected : DESTINATION_ISSUE.sessionChanged };
       }
-      if (status(error) === 401 || status(error) === 403) return { ok: false, error: DESTINATION_ISSUE.permissionDenied };
+      if (githubResponseStatus(error) === GITHUB_HTTP_STATUS.unauthorized
+        || githubResponseStatus(error) === GITHUB_HTTP_STATUS.forbidden) {
+        return { ok: false, error: DESTINATION_ISSUE.permissionDenied };
+      }
       console.warn(DESTINATION_TEXT.verificationIncomplete);
       return { ok: false, error: DESTINATION_ISSUE.networkError };
     }

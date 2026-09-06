@@ -8,7 +8,7 @@ import { AuthFault, type ConnectedSession } from '../github/schemas';
 import type { GithubService } from '../github/service';
 import { DestinationFault } from '../destination/schemas';
 import type { DestinationService } from '../destination/service';
-import { status } from '../destination/api';
+import { githubResponseStatus, GithubWriteRejected } from '../github/errors';
 import { publishAttempt } from './api';
 import {
   acceptedSnapshotSchema, DeliveryFault, deliveryJobsSchema, deliveryRequestSchema,
@@ -112,7 +112,7 @@ export function createDeliveryService(github: GithubService, destination: Destin
         await save(job);
       });
     } catch (error) {
-      const rejected = [400, 401, 403, 404, 409, 422].includes(status(error) ?? 0);
+      const rejected = error instanceof GithubWriteRejected;
       const headChanged = error instanceof DeliveryFault && error.message === DELIVERY_TEXT.headChanged;
       const uncertain = publicationStarted && !rejected && !headChanged;
       job.receipt = null;
@@ -120,7 +120,8 @@ export function createDeliveryService(github: GithubService, destination: Destin
       job.detail = uncertain ? DELIVERY_TEXT.uncertain
         : rejected ? DELIVERY_TEXT.rejected
           : error instanceof DeliveryFault || error instanceof DestinationFault ? error.message
-            : error instanceof AuthFault ? DELIVERY_TEXT.sessionChanged : DELIVERY_TEXT.networkError;
+            : githubResponseStatus(error) !== null ? DELIVERY_TEXT.requestFailed
+              : error instanceof AuthFault ? DELIVERY_TEXT.sessionChanged : DELIVERY_TEXT.networkError;
       await save(job);
     } finally {
       active.delete(job.id);

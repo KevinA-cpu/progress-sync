@@ -316,6 +316,78 @@ for (const stage of ['tree', 'commit', 'ref'] as const) {
   }
 }
 
+test('an explicit rate-limit rejection is blocked rather than confused with a lost response', async ({
+  extensionContext, progress, problem,
+}) => {
+  const { server } = await setup(extensionContext, progress);
+  server.failAt = 'ref';
+  server.failStatus = 429;
+  await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
+  await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect(progress.getByText('Delivery blocked: GitHub rejected publication.', { exact: false })).toBeVisible();
+  expect(server.updates).toBe(0);
+  await expect(progress.getByRole('link', { name: /^Commit / })).toHaveCount(0);
+});
+
+for (const status of [408, 503]) {
+  test(`a ${status} write response stays uncertain and is not retried`, async ({
+    extensionContext, progress, problem,
+  }) => {
+    const { server } = await setup(extensionContext, progress);
+    server.failAt = 'ref';
+    server.failStatus = status;
+    await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
+    await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+    await expect(progress.getByText('Publication outcome is uncertain.', { exact: false })).toBeVisible();
+    const count = server.writes.length;
+    await progress.reload();
+    await expect(progress.getByText('Publication outcome is uncertain.', { exact: false })).toBeVisible();
+    expect(server.writes).toHaveLength(count);
+    await expect(progress.getByRole('link', { name: /^Commit / })).toHaveCount(0);
+  });
+}
+
+test('a local receipt error with an HTTP-like status cannot prove that GitHub rejected the write', async ({
+  extensionContext, progress, problem,
+}) => {
+  const { server } = await setup(extensionContext, progress);
+  const worker = extensionContext.serviceWorkers()[0];
+  if (!worker) throw new Error('Expected the active extension worker.');
+  await worker.evaluate(() => {
+    const original = chrome.storage.local.set.bind(chrome.storage.local);
+    chrome.storage.local.set = async items => {
+      const jobs: unknown = Reflect.get(items, 'delivery-jobs-v1');
+      if (Array.isArray(jobs) && jobs.some(job => job.state === 'saved')) {
+        chrome.storage.local.set = original;
+        throw Object.assign(new Error('SYNTHETIC_LOCAL_FAILURE'), { status: 403 });
+      }
+      return original(items);
+    };
+  });
+  await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
+  await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect(progress.getByText('Publication outcome is uncertain.', { exact: false })).toBeVisible();
+  expect(server.updates).toBe(1);
+  await expect(progress.getByRole('link', { name: /^Commit / })).toHaveCount(0);
+  await expect(progress.getByText('SYNTHETIC_LOCAL_FAILURE', { exact: false })).toHaveCount(0);
+});
+
+test('a later read rejection is not mistaken for a rejection of the earlier mutation', async ({
+  extensionContext, progress, problem,
+}) => {
+  const { server } = await setup(extensionContext, progress);
+  await extensionContext.route('https://api.github.com/repos/fixture-user/progress-solutions/git/trees/*',
+    route => new URL(route.request().url()).pathname.endsWith(`/${'b'.repeat(40)}`)
+      ? route.fallback()
+      : route.fulfill({ status: 403, json: { message: 'SYNTHETIC_READ_FAILURE' } }));
+  await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
+  await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect(progress.getByText('Publication outcome is uncertain.', { exact: false })).toBeVisible();
+  expect(server.writes).toHaveLength(1);
+  expect(server.updates).toBe(0);
+  await expect(progress.getByRole('link', { name: /^Commit / })).toHaveCount(0);
+});
+
 test('a concurrent branch advance is preserved by the non-force update', async ({
   extensionContext, progress, problem,
 }) => {

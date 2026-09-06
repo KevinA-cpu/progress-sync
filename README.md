@@ -151,6 +151,15 @@ guidance without claiming a valid connection.
   builds endpoint URLs and encodes parameters; Zod still validates responses.
   The shared restricted transport and session checks remain in effect. No retry
   or throttling plugin is installed: uncertain writes must not be replayed.
+- Write errors are classified at the individual Octokit mutation boundary using
+  its official `RequestError` type and actual HTTP response, not an arbitrary
+  exception's `status` field. A client-error response (4xx, except request timeout
+  408) is treated as a rejection; 429 is a rejection, not a missing response.
+  Timeouts, missing responses, server errors, and failures after a successful response remain
+  conservative. Only the mutation wrapper can produce a write-rejection result;
+  read failures, validation, cancellation, and local receipt persistence cannot
+  impersonate one. This is a protocol policy, not proof from GitHub's remote
+  state: uncertain writes still require reconciliation before retry or success.
 - Session expiry is checked before credential use and scheduled with an alarm.
   Browser restart requires reconnection. **Check connection** revalidates the
   identity and clears rejected/revoked credentials; the displayed verification

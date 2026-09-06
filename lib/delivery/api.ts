@@ -9,6 +9,7 @@ import { destinationApi } from '../destination/api';
 import { DESTINATION_ISSUE } from '../constants/destination';
 import { DestinationFault } from '../destination/schemas';
 import { githubRest } from '../github/rest';
+import { githubWrite } from '../github/errors';
 import type { ConnectedSession } from '../github/schemas';
 import {
   acceptanceRecordSchema, DeliveryFault, gitCommitSchema, gitObjectSchema, gitRefSchema, gitTreeSchema,
@@ -75,10 +76,10 @@ export async function publishAttempt(
   ];
   await guard();
   await beforeWrite();
-  const createdTree = await validatedCall(() => octokit.rest.git.createTree({
+  const createdTree = await validatedCall(() => githubWrite(() => octokit.rest.git.createTree({
     ...repo, base_tree: base.tree.sha,
     tree: entries,
-  }), gitObjectSchema);
+  })), gitObjectSchema);
   const proposed = await validatedCall(() => octokit.rest.git.getTree({
     ...repo, tree_sha: createdTree.sha, recursive: GIT_RECURSIVE,
   }), gitTreeSchema);
@@ -101,18 +102,18 @@ export async function publishAttempt(
     expected.delete(entry.path);
   }
   if (expected.size !== 0) throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
-  const commit = await validatedCall(() => octokit.rest.git.createCommit({
+  const commit = await validatedCall(() => githubWrite(() => octokit.rest.git.createCommit({
     ...repo, tree: createdTree.sha, parents: [base.sha],
     message: DELIVERY_TEXT.commitMessage(snapshot.provider, snapshot.problemId, job.id),
-  }), gitCommitSchema);
+  })), gitCommitSchema);
   if (commit.tree.sha !== createdTree.sha || commit.parents.length !== 1 || commit.parents[0]?.sha !== base.sha) {
     throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
   }
   const latest = await destination.branch(target.name, target.branch);
   if (latest.commit.sha !== base.sha) throw new DeliveryFault(DELIVERY_TEXT.headChanged);
-  const ref = await validatedCall(() => octokit.rest.git.updateRef({
+  const ref = await validatedCall(() => githubWrite(() => octokit.rest.git.updateRef({
     ...repo, ref: deliveryRef(target.branch), sha: commit.sha, force: false,
-  }), gitRefSchema);
+  })), gitRefSchema);
   if (ref.ref !== `refs/${deliveryRef(target.branch)}` || ref.object.sha !== commit.sha) {
     throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
   }

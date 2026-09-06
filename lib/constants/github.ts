@@ -21,6 +21,10 @@ export const GITHUB_PAGINATION = {
 export const GITHUB_PERMISSION = { read: 'read', write: 'write' } as const;
 export const REPOSITORY_SELECTION = { all: 'all', selected: 'selected' } as const;
 export const GITHUB_CONTENT = { file: 'file', base64: 'base64' } as const;
+export const GITHUB_HTTP_STATUS = {
+  created: 201, clientErrorStart: 400, unauthorized: 401, forbidden: 403, notFound: 404,
+  requestTimeout: 408, conflict: 409, serverErrorStart: 500,
+} as const;
 export const AUTH_STATUS = {
   disconnected: 'disconnected', authorizing: 'authorizing', connected: 'connected', unavailable: 'unavailable',
 } as const;
@@ -96,6 +100,7 @@ export const AUTH_TEXT = {
   interruptionUnrecorded: 'Progress Sync: GitHub authorization interruption could not be recorded.',
   expiryUnchecked: 'Progress Sync: GitHub session expiry could not be checked.',
   deprecatedApi: 'Progress Sync: GitHub reported an API deprecation.',
+  writeRejected: 'GitHub rejected this write request.',
   connected: (login: string) => `Connected as ${login}`,
   connectionDetails: (verifiedAt: string, expiresAt: string) =>
     `Identity verified at ${verifiedAt}. Session expires at ${expiresAt}.`,

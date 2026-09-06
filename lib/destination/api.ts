@@ -1,10 +1,13 @@
 import { DESTINATION_ISSUE, DESTINATION_TEXT, MARKER_KIND, MARKER_PATH } from '../constants/destination';
-import { AUTH_ISSUE, GITHUB_CONTENT, GITHUB_PAGINATION, GITHUB_PERSONAL_ACCOUNT_TYPE } from '../constants/github';
+import {
+  AUTH_ISSUE, GITHUB_CONTENT, GITHUB_HTTP_STATUS, GITHUB_PAGINATION, GITHUB_PERSONAL_ACCOUNT_TYPE,
+} from '../constants/github';
 import { z } from '../schema';
 import { AuthFault, githubUserResponseSchema, type ConnectedSession } from '../github/schemas';
 import { githubRest } from '../github/rest';
+import { githubResponseStatus, githubWrite } from '../github/errors';
 import {
-  DestinationFault, branchSchema, httpStatusSchema, installationSchema, markerSchema, repositorySchema,
+  DestinationFault, branchSchema, installationSchema, markerSchema, repositorySchema,
   type Installation, type Repository,
 } from './schemas';
 
@@ -88,7 +91,10 @@ export function destinationApi(
       if (branch.name !== branchName) throw new DestinationFault(DESTINATION_ISSUE.branchUnavailable);
       return branch;
     } catch (error) {
-      if (status(error) === 404 || status(error) === 409) throw new DestinationFault(DESTINATION_ISSUE.branchUnavailable);
+      if (githubResponseStatus(error) === GITHUB_HTTP_STATUS.notFound
+        || githubResponseStatus(error) === GITHUB_HTTP_STATUS.conflict) {
+        throw new DestinationFault(DESTINATION_ISSUE.branchUnavailable);
+      }
       throw error;
     }
   }
@@ -101,7 +107,7 @@ export function destinationApi(
         type: z.literal(GITHUB_CONTENT.file), encoding: z.literal(GITHUB_CONTENT.base64), content: z.string().max(16_384),
       }));
     } catch (error) {
-      if (status(error) === 404) return null;
+      if (githubResponseStatus(error) === GITHUB_HTTP_STATUS.notFound) return null;
       throw error;
     }
     let value: unknown;
@@ -115,25 +121,22 @@ export function destinationApi(
     return parsed.data;
   }
   async function initialize(name: string, branchName: string | null, operationId: string) {
-    await call(() => octokit.rest.repos.createOrUpdateFileContents({
+    await call(() => githubWrite(() => octokit.rest.repos.createOrUpdateFileContents({
       ...repositoryParameters(name), path: MARKER_PATH,
       message: DESTINATION_TEXT.initializeCommit,
       content: btoa(JSON.stringify({ kind: MARKER_KIND, schemaVersion: 1, initializationId: operationId }, null, 2) + '\n'),
       ...(branchName === null ? {} : { branch: branchName }),
-    }));
+    })));
   }
   async function create(name: string) {
-    const response = await call(() => octokit.rest.repos.createForAuthenticatedUser({
+    const response = await call(() => githubWrite(() => octokit.rest.repos.createForAuthenticatedUser({
       name, private: false, auto_init: true, description: DESTINATION_TEXT.repositoryDescription,
-    }));
+    })));
     const parsed = repositorySchema.safeParse(response.data);
-    if (response.status !== 201 || !parsed.success) throw new DestinationFault(DESTINATION_ISSUE.invalidResponse);
+    if (response.status !== GITHUB_HTTP_STATUS.created || !parsed.success) {
+      throw new DestinationFault(DESTINATION_ISSUE.invalidResponse);
+    }
     return parsed.data;
   }
   return { identity, installations, repository, included, empty, branch, marker, initialize, create };
-}
-
-export function status(error: unknown): number | null {
-  const parsed = httpStatusSchema.safeParse(error);
-  return parsed.success ? parsed.data.status : null;
 }
