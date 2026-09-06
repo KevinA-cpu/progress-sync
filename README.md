@@ -36,6 +36,29 @@ After a build, tests can be rerun without rebuilding:
 pnpm exec playwright test capture.spec.ts
 ```
 
+### Test-runner performance
+
+The runner uses two workers, including parallel tests within a file. Every test
+still gets its own extension copy, browser profile, storage, and API fixtures.
+Authentication state is never shared between tests for speed.
+
+Use fewer workers on a constrained machine, or a focused selector while editing:
+
+```sh
+pnpm test -- --workers=1
+pnpm exec playwright test github.spec.ts -g "slowdown"
+```
+
+The second command skips the build; rebuild first if extension code, dependencies,
+or bundled configuration changed. The regular `pnpm test` command always builds.
+
+Polling backoff and cancellation tests use a paused Playwright clock installed
+before their connection page loads. They advance virtual time while exercising
+the real authorization code and record requests against the same virtual clock.
+Assertions still verify the full required backoff intervals and absence of
+requests after cancellation; production timing is unchanged. Browser/worker
+restart tests retain their real lifecycle behavior.
+
 ## Try the extension
 
 1. Run `pnpm run build`.

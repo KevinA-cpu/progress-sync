@@ -30,7 +30,10 @@ interface GithubFixture {
   logs: string[];
 }
 
-export async function githubFixture(context: BrowserContext) {
+export async function githubFixture(
+  context: BrowserContext,
+  now: () => Promise<number> = async () => Date.now(),
+) {
   const server: GithubFixture = {
     approved: true,
     deviceError: null,
@@ -78,7 +81,7 @@ export async function githubFixture(context: BrowserContext) {
         expires_in: server.deviceLifetime, interval: server.interval,
       } });
     } else if (path === '/login/oauth/access_token') {
-      server.tokenRequestTimes.push(Date.now());
+      server.tokenRequestTimes.push(await now());
       if (server.tokenGate) await server.tokenGate;
       const body = route.request().postDataJSON();
       const headers = await route.request().allHeaders();
@@ -119,6 +122,23 @@ export async function openConnection(context: BrowserContext, progress: Page): P
   ]);
   await connection.getByRole('heading', { name: 'Connect GitHub', exact: true }).waitFor();
   return connection;
+}
+
+export async function openClockedConnection(context: BrowserContext, progress: Page): Promise<Page> {
+  const now = Date.now();
+  await context.clock.install({ time: now - 60_000 });
+  await context.clock.pauseAt(now);
+  return openConnection(context, progress);
+}
+
+export async function advanceUntilPolls(page: Page, server: GithubFixture, count: number): Promise<void> {
+  // Small steps let real extension messages and routed responses settle between virtual timer ticks.
+  for (let elapsed = 0; elapsed < 30_000 && server.tokenRequestTimes.length < count; elapsed += 100) {
+    await page.clock.runFor(100);
+  }
+  if (server.tokenRequestTimes.length !== count) {
+    throw new Error(`Expected ${count} authorization polls within 30 seconds of virtual time.`);
+  }
 }
 
 export async function credentialSummary(page: Page) {
