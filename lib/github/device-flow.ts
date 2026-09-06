@@ -54,7 +54,7 @@ export async function authorizeDevice(
     expiresAt: new Date(deadline).toISOString(),
   });
 
-  for (;;) {
+  while (true) {
     await wait(Math.min(interval, Math.max(0, deadline - Date.now())), signal);
     if (Date.now() >= deadline) throw new AuthFault('flow-expired');
     await permit();

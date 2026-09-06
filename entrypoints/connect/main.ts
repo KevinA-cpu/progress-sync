@@ -2,7 +2,8 @@ import { browser } from 'wxt/browser';
 import { githubCall } from '../../lib/github/client';
 import { authorizeDevice } from '../../lib/github/device-flow';
 import {
-  AUTH_SESSION_KEY, AuthFault, authIssue, issueMessages, pendingSessionSchema, type AuthState,
+  AUTH_SESSION_KEY, AuthFault, authIssue, issueMessages, pendingSessionSchema,
+  type AuthRequest, type AuthState,
 } from '../../lib/github/schemas';
 import '../options/style.css';
 
@@ -114,21 +115,30 @@ async function start(): Promise<void> {
   }
 }
 
+async function updateConnection(request: AuthRequest): Promise<void> {
+  try {
+    await githubCall(request);
+  } catch (error) {
+    if (!(error instanceof AuthFault)) throw error;
+    console.warn('Progress Sync:', issueMessages[error.issue]);
+  }
+  await refresh();
+}
+
 connect.addEventListener('click', () => { void start(); });
 cancel.addEventListener('click', () => {
   if (!active) return;
   const current = active;
   current.controller.abort();
-  void githubCall({ type: 'github:cancel', attemptId: current.id, issue: 'cancelled' })
-    .then(refresh, refresh);
+  void updateConnection({ type: 'github:cancel', attemptId: current.id, issue: 'cancelled' });
 });
 disconnect.addEventListener('click', () => {
   active?.controller.abort();
-  void githubCall({ type: 'github:disconnect' }).then(refresh, refresh);
+  void updateConnection({ type: 'github:disconnect' });
 });
 check.addEventListener('click', () => {
   check.disabled = true;
-  void githubCall({ type: 'github:check' }).then(refresh, refresh);
+  void updateConnection({ type: 'github:check' });
 });
 browser.storage.onChanged.addListener((changes, area) => {
   if (area !== 'session' || !(AUTH_SESSION_KEY in changes)) return;
