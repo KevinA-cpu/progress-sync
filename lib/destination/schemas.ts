@@ -1,3 +1,8 @@
+import {
+  DESTINATION_FAULT_NAME, DESTINATION_ISSUE, DESTINATION_MESSAGE, DESTINATION_MESSAGES,
+  DESTINATION_MESSAGE_PREFIX, DESTINATION_PHASE, MARKER_KIND,
+} from '../constants/destination';
+import { GITHUB_PERMISSION, REPOSITORY_SELECTION } from '../constants/github';
 import { z } from '../schema';
 import { githubUserSchema } from '../github/schemas';
 
@@ -8,16 +13,15 @@ export const branchNameSchema = z.string().min(1).max(255).refine(branch =>
   && !branch.startsWith('/') && !branch.endsWith('/') && !branch.endsWith('.')
   && branch !== '@' && branch.split('/').every(part =>
     part !== '' && !part.startsWith('.') && !part.endsWith('.lock')));
-export const MARKER_PATH = '.progress-sync.json';
 export const markerSchema = z.strictObject({
-  kind: z.literal('progress-sync'), schemaVersion: z.literal(1), initializationId: z.uuid(),
+  kind: z.literal(MARKER_KIND), schemaVersion: z.literal(1), initializationId: z.uuid(),
 });
 export const installationSchema = z.object({
   id: z.int().positive(), app_id: z.int().positive(), client_id: z.string().optional(),
   account: z.object({ id: z.int().positive(), login: z.string(), type: z.string() }).nullable(),
-  repository_selection: z.enum(['all', 'selected']), suspended_at: z.string().nullable(),
+  repository_selection: z.enum(REPOSITORY_SELECTION), suspended_at: z.string().nullable(),
   permissions: z.object({
-    contents: z.enum(['read', 'write']).optional(), administration: z.enum(['read', 'write']).optional(),
+    contents: z.enum(GITHUB_PERMISSION).optional(), administration: z.enum(GITHUB_PERMISSION).optional(),
   }),
 });
 export type Installation = z.infer<typeof installationSchema>;
@@ -38,65 +42,41 @@ export const journalSchema = z.strictObject({
   owner: z.string(), name: repositoryNameSchema, clientId: z.string(),
   installationId: z.int().positive(), appId: z.int().positive(),
   repositoryId: z.int().positive().nullable(),
-  phase: z.enum(['creating', 'created', 'initializing', 'initialization-rejected', 'ready']),
+  phase: z.enum(DESTINATION_PHASE),
   initializationAuthorized: z.boolean(),
   branch: branchNameSchema.nullable(), verifiedAt: z.iso.datetime().nullable(),
   connectionId: z.uuid(), commitSha: z.string().nullable(),
 });
 export type DestinationJournal = z.infer<typeof journalSchema>;
-export const destinationIssueSchema = z.enum([
-  'not-connected', 'session-changed', 'invalid-input', 'permission-denied', 'installation-required',
-  'repository-not-included', 'name-collision', 'creation-uncertain', 'incompatible-repository',
-  'initialization-required', 'initialization-uncertain', 'initialization-rejected', 'branch-unavailable', 'repository-changed',
-  'invalid-response', 'network-error', 'stored-data-invalid', 'pending-operation',
-]);
+export const destinationIssueSchema = z.enum(DESTINATION_ISSUE);
 export type DestinationIssue = z.infer<typeof destinationIssueSchema>;
-export const destinationMessages: Record<DestinationIssue, string> = {
-  'not-connected': 'Connect GitHub before setting up a repository.',
-  'session-changed': 'The GitHub session changed or expired. Reconnect and verify the destination again.',
-  'invalid-input': 'Check the repository name, branch, installation, and confirmation.',
-  'permission-denied': 'Repository writing or creation permission is missing or denied. Review App and account permissions.',
-  'installation-required': 'Install this GitHub App on your personal account, then refresh installations.',
-  'repository-not-included': 'The repository is not accessible to the selected App installation. Select it on GitHub, then verify again.',
-  'name-collision': 'That repository already exists. Explicitly connect it or choose another name.',
-  'creation-uncertain': 'Creation may have completed. Inspect GitHub and explicitly connect the repository; it will not be created again automatically.',
-  'incompatible-repository': 'This is not a compatible public Progress Sync repository. No existing files were changed.',
-  'initialization-required': 'This repository is empty. Confirm initialization before connecting it.',
-  'initialization-uncertain': 'Initialization may have completed. Verify the pending repository before any further writes.',
-  'initialization-rejected': 'Initialization was rejected. Fix permissions or branch policy, then verify again.',
-  'branch-unavailable': 'The selected branch is unavailable or the repository has not finished initializing. Verify again.',
-  'repository-changed': 'The repository identity, owner, or visibility changed. Select the destination explicitly again.',
-  'invalid-response': 'GitHub returned an unsupported response. The destination is not verified.',
-  'network-error': 'GitHub could not be reached. The destination is not verified; try verification again.',
-  'stored-data-invalid': 'Saved destination data is invalid. It has not been overwritten.',
-  'pending-operation': 'A repository operation is unresolved. Verify it or explicitly discard its local setup record first.',
-};
+export const destinationMessages = DESTINATION_MESSAGES;
 export class DestinationFault extends Error {
   constructor(readonly issue: DestinationIssue) {
     super(destinationMessages[issue]);
-    this.name = 'DestinationFault';
+    this.name = DESTINATION_FAULT_NAME;
   }
 }
-export const destinationEnvelopeSchema = z.object({ type: z.string().startsWith('destination:') });
+export const destinationEnvelopeSchema = z.object({ type: z.string().startsWith(DESTINATION_MESSAGE_PREFIX) });
 export const destinationRequestSchema = z.discriminatedUnion('type', [
-  z.strictObject({ type: z.literal('destination:load') }),
+  z.strictObject({ type: z.literal(DESTINATION_MESSAGE.load) }),
   z.strictObject({
-    type: z.literal('destination:create'), name: repositoryNameSchema,
+    type: z.literal(DESTINATION_MESSAGE.create), name: repositoryNameSchema,
     installationId: z.int().positive(), publicConfirmed: z.literal(true), expectedConnectionId: z.uuid(),
   }),
   z.strictObject({
-    type: z.literal('destination:connect'), name: repositoryNameSchema,
+    type: z.literal(DESTINATION_MESSAGE.connect), name: repositoryNameSchema,
     installationId: z.int().positive(), branch: branchNameSchema.optional(), initialize: z.boolean(),
     expectedConnectionId: z.uuid(),
   }),
-  z.strictObject({ type: z.literal('destination:verify'), expectedConnectionId: z.uuid() }),
-  z.strictObject({ type: z.literal('destination:discard'), confirmed: z.literal(true), expectedConnectionId: z.uuid() }),
+  z.strictObject({ type: z.literal(DESTINATION_MESSAGE.verify), expectedConnectionId: z.uuid() }),
+  z.strictObject({ type: z.literal(DESTINATION_MESSAGE.discard), confirmed: z.literal(true), expectedConnectionId: z.uuid() }),
 ]);
 export type DestinationRequest = z.infer<typeof destinationRequestSchema>;
 export const destinationViewSchema = z.strictObject({
   user: githubUserSchema,
   connectionId: z.uuid(),
-  installations: z.array(z.strictObject({ id: z.int().positive(), appId: z.int().positive(), selection: z.enum(['all', 'selected']) })),
+  installations: z.array(z.strictObject({ id: z.int().positive(), appId: z.int().positive(), selection: z.enum(REPOSITORY_SELECTION) })),
   journal: journalSchema.nullable(),
   verified: z.boolean(),
 });

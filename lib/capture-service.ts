@@ -1,9 +1,16 @@
+import {
+  DOCUMENT_LIFECYCLE, EXTENSION_PAGE, HTTP_METHOD, LOG_PREFIX, NAVIGATION_QUALIFIER, RESOURCE_TYPE,
+  STORAGE_ACCESS,
+} from './constants/browser';
+import {
+  CAPTURE_PROVENANCE, CAPTURE_STATE, GRADING_URL, GRADING_VERDICT, HDL_ORIGIN, HDL_PROBLEM_PREFIX,
+  PROGRESS_KEY, PROGRESS_PROVIDER, PROGRESS_TEXT, RESULT_TIMEOUT_MS,
+} from './constants/progress';
 import { browser, type Browser } from 'wxt/browser';
 import {
-  GRADING_URL, HDL_ORIGIN, PROGRESS_KEY, RESULT_TIMEOUT_MS,
   attemptListSchema, hashSource, problemIdFieldSchema, progressRequestSchema, readAttempts,
-  resultObservationSchema, submittedSourceFieldSchema,
-  type Attempt, type ProgressReply, type ResultObservation,
+  resultObservationSchema, submittedSourceFieldSchema, type Attempt, type ProgressReply,
+  type ResultObservation,
 } from './progress';
 
 interface Operation {
@@ -21,20 +28,20 @@ export function createCaptureService() {
   let failure: string | null = null;
 
   function reportFailure(error: unknown): void {
-    failure = error instanceof Error ? error.message : 'Progress recording failed.';
-    console.error('Progress Sync:', failure);
-    void browser.action.setBadgeText({ text: '!' }).catch(console.error);
+    failure = error instanceof Error ? error.message : PROGRESS_TEXT.recordingFailed;
+    console.error(LOG_PREFIX, failure);
+    void browser.action.setBadgeText({ text: PROGRESS_TEXT.failureBadge }).catch(console.error);
   }
 
-  const ready = browser.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })
+  const ready = browser.storage.local.setAccessLevel({ accessLevel: STORAGE_ACCESS.trustedContexts })
     .then(readAttempts)
     .then(async stored => {
       attempts = stored;
       let changed = false;
       for (const attempt of attempts) {
-        if (attempt.state === 'pending') {
-          attempt.state = 'unverified';
-          attempt.reason = 'Observation was interrupted. Reload the problem and resubmit.';
+        if (attempt.state === CAPTURE_STATE.pending) {
+          attempt.state = CAPTURE_STATE.unverified;
+          attempt.reason = PROGRESS_TEXT.interrupted;
           attempt.requiresReload = true;
           changed = true;
         }
@@ -58,14 +65,14 @@ export function createCaptureService() {
   function save(): Promise<void> {
     const parsed = attemptListSchema.safeParse(attempts);
     if (!parsed.success) {
-      throw new Error('Local progress could not be saved because the attempt record is invalid.');
+      throw new Error(PROGRESS_TEXT.invalidSave);
     }
     return browser.storage.local.set({ [PROGRESS_KEY]: parsed.data });
   }
 
   function unverify(operation: Operation, reason: string, ambiguous = true): void {
-    if (operation.attempt.state !== 'pending') return;
-    operation.attempt.state = 'unverified';
+    if (operation.attempt.state !== CAPTURE_STATE.pending) return;
+    operation.attempt.state = CAPTURE_STATE.unverified;
     operation.attempt.reason = reason;
     operation.attempt.requiresReload = ambiguous;
     operation.attempt.observedAt = new Date().toISOString();
@@ -76,9 +83,9 @@ export function createCaptureService() {
   async function expire(): Promise<void> {
     let changed = false;
     for (const operation of operations.values()) {
-      if (operation.attempt.state === 'pending'
+      if (operation.attempt.state === CAPTURE_STATE.pending
         && Date.now() - Date.parse(operation.attempt.submittedAt) >= RESULT_TIMEOUT_MS) {
-        unverify(operation, 'Result timed out. Reload the problem and resubmit.');
+        unverify(operation, PROGRESS_TEXT.timeout);
         changed = true;
       }
     }
@@ -88,30 +95,30 @@ export function createCaptureService() {
   // Request completion can precede navigation commit; neither alone proves which document was graded.
   async function finish(operation: Operation): Promise<void> {
     const { attempt, result, documentId } = operation;
-    if (attempt.state !== 'pending' || !operation.completed || !result || !documentId) return;
+    if (attempt.state !== CAPTURE_STATE.pending || !operation.completed || !result || !documentId) return;
     await expire();
-    if (attempt.state !== 'pending') return;
+    if (attempt.state !== CAPTURE_STATE.pending) return;
     const frame = await browser.webNavigation.getFrame({
       tabId: attempt.provenance.tabId, frameId: attempt.provenance.frameId,
     });
     if (result.documentId !== documentId || frame?.documentId !== documentId
-      || frame.url !== GRADING_URL || frame.documentLifecycle !== 'active'
+      || frame.url !== GRADING_URL || frame.documentLifecycle !== DOCUMENT_LIFECYCLE.active
       || frame.parentDocumentId !== attempt.provenance.parentDocumentId
       || result.observation.problemId !== attempt.problemId) {
-      unverify(operation, 'The result could not be tied to this submission. Reload and resubmit.');
+      unverify(operation, PROGRESS_TEXT.unmatchedResult);
     } else {
       switch (result.observation.verdict) {
-        case 'success':
-          attempt.state = 'accepted';
-          attempt.reason = 'Accepted locally - not saved to GitHub';
+        case GRADING_VERDICT.success:
+          attempt.state = CAPTURE_STATE.accepted;
+          attempt.reason = PROGRESS_TEXT.accepted;
           attempt.observedAt = new Date().toISOString();
           attempt.provenance.resultDocumentId = documentId;
           break;
-        case 'failure':
-          unverify(operation, 'HDLBits did not accept this submission.', false);
+        case GRADING_VERDICT.failure:
+          unverify(operation, PROGRESS_TEXT.failed, false);
           break;
-        case 'unknown':
-          unverify(operation, 'The grading result is unsupported or ambiguous. Reload and resubmit.', true);
+        case GRADING_VERDICT.unknown:
+          unverify(operation, PROGRESS_TEXT.ambiguousResult, true);
           break;
       }
     }
@@ -122,12 +129,12 @@ export function createCaptureService() {
   function request(details: Browser.webRequest.OnBeforeRequestDetails): undefined {
     void run(async () => {
       await expire();
-      if (details.method !== 'POST') {
+      if (details.method !== HTTP_METHOD.post) {
         if (details.parentDocumentId) quarantinedParents.add(details.parentDocumentId);
         for (const operation of operations.values()) {
           if (operation.attempt.provenance.tabId === details.tabId
             && operation.attempt.provenance.frameId === details.frameId) {
-            unverify(operation, 'A different navigation replaced the submission result.');
+            unverify(operation, PROGRESS_TEXT.navigationReplaced);
           }
         }
         await save();
@@ -140,41 +147,41 @@ export function createCaptureService() {
       const problemId = parsedProblem.success ? parsedProblem.data[0] : null;
       const parentDocumentId = details.parentDocumentId ?? null;
       const attempt: Attempt = {
-        schemaVersion: 1, id: crypto.randomUUID(), provider: 'hdlbits',
+        schemaVersion: 1, id: crypto.randomUUID(), provider: PROGRESS_PROVIDER,
         problemId, source, sourceHash: source === null ? null : await hashSource(source),
         submittedAt: new Date(details.timeStamp).toISOString(), observedAt: null,
-        state: 'pending', reason: 'Waiting for the result - not saved to GitHub',
+        state: CAPTURE_STATE.pending, reason: PROGRESS_TEXT.waiting,
         requiresReload: false,
         provenance: {
-          capture: 'browser-post', requestId: details.requestId,
+          capture: CAPTURE_PROVENANCE, requestId: details.requestId,
           tabId: details.tabId, frameId: details.frameId, parentDocumentId,
           resultDocumentId: null,
         },
       };
       const operation: Operation = { attempt, completed: false, documentId: null, result: null };
-      const overlapping = [...operations.values()].filter(item => item.attempt.state === 'pending');
+      const overlapping = [...operations.values()].filter(item => item.attempt.state === CAPTURE_STATE.pending);
       attempts.push(attempt);
       operations.set(details.requestId, operation);
-      if (!source || !problemId || !parentDocumentId || details.type !== 'sub_frame'
+      if (!source || !problemId || !parentDocumentId || details.type !== RESOURCE_TYPE.subFrame
         || details.parentFrameId !== 0 || details.initiator !== HDL_ORIGIN
         || details.url !== GRADING_URL || details.requestBody?.error || form?.vlgcode) {
-        unverify(operation, 'Unsupported submission. Use the in-page text editor; source limit is 256 KiB.');
+        unverify(operation, PROGRESS_TEXT.unsupported);
       } else {
         const parent = await browser.webNavigation.getFrame({ tabId: details.tabId, frameId: 0 });
         if (!parent || parent.documentId !== parentDocumentId
-          || parent.documentLifecycle !== 'active'
+          || parent.documentLifecycle !== DOCUMENT_LIFECYCLE.active
           || parent.url.split('?')[0]?.split('#')[0]?.toLowerCase()
-            !== `${HDL_ORIGIN}/wiki/${problemId}`) {
-          unverify(operation, 'The originating problem document could not be verified.');
+            !== `${HDL_PROBLEM_PREFIX}${problemId}`) {
+          unverify(operation, PROGRESS_TEXT.unverifiedOrigin);
         } else if (quarantinedParents.has(parentDocumentId)) {
-          unverify(operation, 'This page has an ambiguous observation. Reload the problem and resubmit.');
+          unverify(operation, PROGRESS_TEXT.quarantined);
         } else if (!observedParents.has(parentDocumentId)) {
-          unverify(operation, 'The problem document predates this observer. Reload the problem and resubmit.');
+          unverify(operation, PROGRESS_TEXT.predatesObserver);
         }
       }
       if (overlapping.length) {
         for (const item of [...overlapping, operation]) {
-          unverify(item, 'Overlapping simulations are not supported yet. Reload the problems and resubmit separately.');
+          unverify(item, PROGRESS_TEXT.overlapping);
         }
       }
       await save();
@@ -186,15 +193,15 @@ export function createCaptureService() {
   function committed(details: Browser.webNavigation.WebNavigationTransitionCallbackDetails): void {
     void run(async () => {
       if (details.frameId === 0) {
-        if (details.url.startsWith(`${HDL_ORIGIN}/wiki/`) && details.documentLifecycle === 'active') {
+        if (details.url.startsWith(HDL_PROBLEM_PREFIX) && details.documentLifecycle === DOCUMENT_LIFECYCLE.active) {
           observedParents.add(details.documentId);
         }
         let changed = false;
         for (const operation of operations.values()) {
-          if (operation.attempt.state === 'pending'
+          if (operation.attempt.state === CAPTURE_STATE.pending
             && operation.attempt.provenance.tabId === details.tabId
             && operation.attempt.provenance.parentDocumentId !== details.documentId) {
-            unverify(operation, 'The problem navigated before its result was observed.');
+            unverify(operation, PROGRESS_TEXT.problemNavigated);
             changed = true;
           }
         }
@@ -206,9 +213,9 @@ export function createCaptureService() {
         if (provenance.tabId !== details.tabId || provenance.frameId !== details.frameId) continue;
         if (details.url !== GRADING_URL
           || details.parentDocumentId !== provenance.parentDocumentId
-          || details.transitionQualifiers.includes('forward_back')
+          || details.transitionQualifiers.includes(NAVIGATION_QUALIFIER.forwardBack)
           || (operation.documentId && operation.documentId !== details.documentId)) {
-          unverify(operation, 'An unexpected result navigation made this attempt unverified.');
+          unverify(operation, PROGRESS_TEXT.unexpectedNavigation);
           await save();
         } else {
           operation.documentId = details.documentId;
@@ -223,7 +230,7 @@ export function createCaptureService() {
       const operation = operations.get(details.requestId);
       if (!operation) return;
       if (details.statusCode !== 200 || details.url !== GRADING_URL || details.fromCache) {
-        unverify(operation, 'The grading request did not return a fresh successful response.');
+        unverify(operation, PROGRESS_TEXT.unsuccessfulResponse);
         await save();
       } else {
         operation.completed = true;
@@ -236,7 +243,7 @@ export function createCaptureService() {
     void run(async () => {
       const operation = operations.get(details.requestId);
       if (!operation) return;
-      unverify(operation, 'The grading request failed or redirected. Reload and resubmit.');
+      unverify(operation, PROGRESS_TEXT.requestInterrupted);
       await save();
     }).catch(reportFailure);
   }
@@ -245,7 +252,7 @@ export function createCaptureService() {
     return run(async () => {
       await expire();
       if (sender.id === browser.runtime.id
-        && sender.url === browser.runtime.getURL('/options.html')
+        && sender.url === browser.runtime.getURL(EXTENSION_PAGE.options)
         && progressRequestSchema.safeParse(value).success) {
         return { ok: true, attempts };
       }
@@ -253,18 +260,18 @@ export function createCaptureService() {
       if (sender.id !== browser.runtime.id || sender.url !== GRADING_URL
         || !sender.documentId || sender.tab?.id === undefined || !sender.frameId
         || !parsed.success) {
-        console.warn('Progress Sync rejected an unsupported message or sender.');
-        return { ok: false, error: 'Unsupported message or sender.' };
+        console.warn(PROGRESS_TEXT.rejectedMessage);
+        return { ok: false, error: PROGRESS_TEXT.unsupportedMessage };
       }
       const operation = [...operations.values()].find(item =>
-        item.attempt.state === 'pending'
+        item.attempt.state === CAPTURE_STATE.pending
         && item.attempt.provenance.tabId === sender.tab?.id
         && item.attempt.provenance.frameId === sender.frameId);
       if (!operation) {
-        return { ok: false, error: 'No matching observed submission. This result is unverified.' };
+        return { ok: false, error: PROGRESS_TEXT.unobservedSubmission };
       }
       if (operation.result && operation.result.documentId !== sender.documentId) {
-        unverify(operation, 'Multiple result documents made this attempt ambiguous.');
+        unverify(operation, PROGRESS_TEXT.multipleDocuments);
         await save();
       } else {
         operation.result = { documentId: sender.documentId, observation: parsed.data };

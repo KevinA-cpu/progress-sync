@@ -59,6 +59,25 @@ Assertions still verify the full required backoff intervals and absence of
 requests after cancellation; production timing is unchanged. Browser/worker
 restart tests retain their real lifecycle behavior.
 
+### Runtime constants
+
+Runtime strings are grouped by domain under [lib/constants](lib/constants):
+
+- [Browser constants](lib/constants/browser.ts): trusted storage access, storage
+  areas, extension page paths, transport policy, and browser event identifiers.
+- [GitHub constants](lib/constants/github.ts): permitted URLs, message/state/error
+  codes, authentication messages, and pagination settings.
+- [Progress constants](lib/constants/progress.ts): provider identity, capture
+  states, grading verdicts, persistence keys, and progress messages.
+- [Destination constants](lib/constants/destination.ts): marker identity,
+  operation phases, setup message/error codes, and destination messages.
+
+Zod schemas and runtime switches consume the same literal-valued constant
+objects. Existing wire values, storage keys, and UI messages are unchanged.
+HTML/CSS selectors, syntax delimiters, and schema property names stay with their
+definitions; test fixture values and expectations remain independent of
+production constants so the tests can detect accidental contract changes.
+
 ## Try the extension
 
 1. Run `pnpm run build`.
@@ -154,6 +173,9 @@ choose **Verify pending or saved repository**.
 Pagination calls the typed list methods with an explicit page number, a 100-page
 bound, response validation, and session checks on every request. It does not
 automatically follow URLs supplied in response headers.
+`GITHUB_PAGINATION.pageSize` is the 100-item GitHub API page size;
+`GITHUB_PAGINATION.maxPages` is our separate 100-page safety cap. Both are named
+in the GitHub constants rather than repeated as unexplained numbers.
 
 The version-1 `.progress-sync.json` marker identifies a compatible repository.
 It contains `kind: "progress-sync"`, `schemaVersion: 1`, and a UUID

@@ -1,14 +1,17 @@
+import { DOM_EVENT, STORAGE_AREA } from '../../lib/constants/browser';
+import { DESTINATION_ISSUE, DESTINATION_MESSAGE, DESTINATION_TEXT } from '../../lib/constants/destination';
+import { AUTH_SESSION_KEY } from '../../lib/constants/github';
 import { browser } from 'wxt/browser';
-import { AUTH_SESSION_KEY } from '../../lib/github/schemas';
+
 import {
-  destinationMessages, destinationReplySchema, destinationRequestSchema,
-  type DestinationRequest, type DestinationView,
+  destinationMessages, destinationReplySchema, destinationRequestSchema, type DestinationRequest,
+  type DestinationView,
 } from '../../lib/destination/schemas';
 import '../options/style.css';
 
 function required<T extends HTMLElement>(selector: string): T {
   const element = document.querySelector<T>(selector);
-  if (!element) throw new Error('Destination interface is incomplete.');
+  if (!element) throw new Error(DESTINATION_TEXT.interfaceIncomplete);
   return element;
 }
 const status = required<HTMLElement>('#status');
@@ -29,92 +32,92 @@ function render(view: DestinationView) {
     required<HTMLInputElement>('#discard-confirmed').checked = false;
   }
   connectionId = view.connectionId;
-  owner.textContent = `Owner: ${view.user.login}`;
+  owner.textContent = DESTINATION_TEXT.owner(view.user.login);
   const chosen = installation.value;
   installation.replaceChildren(...view.installations.map(item => {
     const option = document.createElement('option');
     option.value = String(item.id);
-    option.textContent = `App ${item.appId}, installation ${item.id} (${item.selection} repositories)`;
+    option.textContent = DESTINATION_TEXT.installation(item.appId, item.id, item.selection);
     return option;
   }));
   if (view.installations.some(item => String(item.id) === chosen)) installation.value = chosen;
   saved.textContent = view.journal
-    ? `Saved setup: ${view.journal.owner}/${view.journal.name} (${view.journal.phase}). Repository ID: ${view.journal.repositoryId ?? 'not confirmed'}.`
-    : 'No destination selected.';
+    ? DESTINATION_TEXT.savedSetup(view.journal.owner, view.journal.name, view.journal.phase, view.journal.repositoryId)
+    : DESTINATION_TEXT.noSelection;
   status.textContent = view.verified && view.journal
-    ? `Verified destination: ${view.journal.owner}/${view.journal.name} @ ${view.journal.branch}`
-    : view.installations.length === 0 ? destinationMessages['installation-required']
-      : 'Select a repository action. Saved destinations must be verified again before use.';
+    ? DESTINATION_TEXT.verified(view.journal.owner, view.journal.name, view.journal.branch)
+    : view.installations.length === 0 ? destinationMessages[DESTINATION_ISSUE.installationRequired]
+      : DESTINATION_TEXT.selectAction;
 }
 async function perform(input: DestinationRequest): Promise<void> {
   if (busy) {
-    status.textContent = 'A repository operation is already running. Wait for it to finish.';
+    status.textContent = DESTINATION_TEXT.alreadyRunning;
     return;
   }
   const current = ++version;
   busy = true;
   form.disabled = true;
-  status.textContent = 'Checking GitHub destination...';
+  status.textContent = DESTINATION_TEXT.checking;
   try {
     const parsedInput = destinationRequestSchema.safeParse(input);
     if (!parsedInput.success) {
-      status.textContent = destinationMessages['invalid-input'];
+      status.textContent = destinationMessages[DESTINATION_ISSUE.invalidInput];
       return;
     }
     const reply = destinationReplySchema.safeParse(await browser.runtime.sendMessage(parsedInput.data));
     if (current !== version) return;
     if (!reply.success) {
-      status.textContent = destinationMessages['invalid-response'];
+      status.textContent = destinationMessages[DESTINATION_ISSUE.invalidResponse];
     } else if (!reply.data.ok) {
       status.textContent = destinationMessages[reply.data.error];
-      if (reply.data.error === 'not-connected' || reply.data.error === 'session-changed') connectionId = null;
+      if (reply.data.error === DESTINATION_ISSUE.notConnected || reply.data.error === DESTINATION_ISSUE.sessionChanged) connectionId = null;
     } else {
       render(reply.data.view);
     }
   } catch {
-    if (current === version) status.textContent = 'Destination setup was interrupted. Refresh and verify before retrying.';
+    if (current === version) status.textContent = DESTINATION_TEXT.interrupted;
   } finally {
     busy = false;
     form.disabled = connectionId === null;
   }
 }
-required('#refresh').addEventListener('click', () => { void perform({ type: 'destination:load' }); });
-required('#create').addEventListener('click', () => {
+required('#refresh').addEventListener(DOM_EVENT.click, () => { void perform({ type: DESTINATION_MESSAGE.load }); });
+required('#create').addEventListener(DOM_EVENT.click, () => {
   if (!required<HTMLInputElement>('#public-confirmed').checked) {
-    status.textContent = 'Confirm public visibility before creating a repository.';
+    status.textContent = DESTINATION_TEXT.confirmPublic;
     return;
   }
   void perform({
-    type: 'destination:create', name: name.value, installationId: Number(installation.value),
+    type: DESTINATION_MESSAGE.create, name: name.value, installationId: Number(installation.value),
     publicConfirmed: true, expectedConnectionId: connectionId ?? '',
   });
 });
-required('#existing').addEventListener('click', () => {
+required('#existing').addEventListener(DOM_EVENT.click, () => {
   void perform({
-    type: 'destination:connect', name: name.value, installationId: Number(installation.value),
+    type: DESTINATION_MESSAGE.connect, name: name.value, installationId: Number(installation.value),
     initialize: required<HTMLInputElement>('#initialize').checked,
     expectedConnectionId: connectionId ?? '',
     ...(branch.value ? { branch: branch.value } : {}),
   });
 });
-required('#verify').addEventListener('click', () => {
-  void perform({ type: 'destination:verify', expectedConnectionId: connectionId ?? '' });
+required('#verify').addEventListener(DOM_EVENT.click, () => {
+  void perform({ type: DESTINATION_MESSAGE.verify, expectedConnectionId: connectionId ?? '' });
 });
-required('#discard').addEventListener('click', () => {
+required('#discard').addEventListener(DOM_EVENT.click, () => {
   if (!required<HTMLInputElement>('#discard-confirmed').checked) {
-    status.textContent = 'Confirm discarding only the local setup record.';
+    status.textContent = DESTINATION_TEXT.confirmDiscard;
     return;
   }
-  void perform({ type: 'destination:discard', confirmed: true, expectedConnectionId: connectionId ?? '' });
+  void perform({ type: DESTINATION_MESSAGE.discard, confirmed: true, expectedConnectionId: connectionId ?? '' });
 });
 browser.storage.onChanged.addListener((changes, area) => {
-  if (area === 'session' && AUTH_SESSION_KEY in changes) {
+  if (area === STORAGE_AREA.session && AUTH_SESSION_KEY in changes) {
     version++;
     connectionId = null;
-    owner.textContent = 'GitHub session changed. Refresh to verify your identity.';
-    status.textContent = destinationMessages['session-changed'];
+    owner.textContent = DESTINATION_TEXT.sessionChanged;
+    status.textContent = destinationMessages[DESTINATION_ISSUE.sessionChanged];
     saved.textContent = '';
     form.disabled = true;
   }
 });
-void perform({ type: 'destination:load' });
+void perform({ type: DESTINATION_MESSAGE.load });

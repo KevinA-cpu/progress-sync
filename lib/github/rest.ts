@@ -1,3 +1,5 @@
+import { SDK_HOOK } from '../constants/browser';
+import { AUTH_ISSUE, GITHUB_API_ORIGIN } from '../constants/github';
 import { Octokit } from '@octokit/core';
 import { restEndpointMethods } from '@octokit/plugin-rest-endpoint-methods';
 import { AuthFault } from './schemas';
@@ -10,11 +12,11 @@ export function githubRest(token: string, signal: AbortSignal) {
     auth: token,
     request: githubRequestOptions([], signal),
   });
-  octokit.hook.wrap('request', async (request, options) => {
+  octokit.hook.wrap(SDK_HOOK.request, async (request, options) => {
     const endpoint = octokit.request.endpoint(options);
     const url = new URL(endpoint.url);
-    if (url.origin !== 'https://api.github.com' || url.username || url.password) {
-      throw new AuthFault('not-allowed');
+    if (url.origin !== GITHUB_API_ORIGIN || url.username || url.password) {
+      throw new AuthFault(AUTH_ISSUE.notAllowed);
     }
     options.request = { ...options.request, ...githubRequestOptions([endpoint.url], signal) };
     return request(options);
