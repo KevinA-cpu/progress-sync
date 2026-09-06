@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Progress repository - Progress Sync</title>
+    <script type="module" src="./main.ts"></script>
+  </head>
+  <body>
+    <main>
+      <h1>Set up progress repository</h1>
+      <p id="owner">Checking GitHub identity...</p>
+      <p>Public repositories expose solutions and progress to everyone. Creation needs Administration: write;
+        this is ongoing authority, not create-only. Updates need Contents: write.</p>
+      <p>Only public repositories owned by your personal account are supported in this version.</p>
+      <p><a href="/connect.html" target="_blank" rel="noopener">Connect GitHub</a> |
+        <a href="https://github.com/settings/installations" target="_blank" rel="noopener noreferrer">Manage App installation access</a></p>
+      <p>Select only intended repositories on GitHub. This extension never expands installation access.</p>
+      <button id="refresh" type="button">Refresh installations</button>
+      <p id="status" role="status">Loading destination setup...</p>
+      <fieldset id="form" disabled>
+        <p><label>App installation <select id="installation"></select></label></p>
+        <p><label>Repository name <input id="name" value="progress-solutions" maxlength="100" required></label></p>
+        <p><label><input id="public-confirmed" type="checkbox"> I understand this repository will be public</label></p>
+        <button id="create" type="button">Create public repository</button>
+        <h2>Connect an existing repository</h2>
+        <p><label>Branch (optional) <input id="branch" placeholder="Use GitHub's default branch"></label></p>
+        <p><label><input id="initialize" type="checkbox"> Initialize this empty or previously requested repository with a Progress Sync marker</label></p>
+        <p>Connecting a populated repository requires a compatible marker. Initialization adds only that marker, never replaces existing files.</p>
+        <button id="existing" type="button">Connect existing repository</button>
+        <button id="verify" type="button">Verify pending or saved repository</button>
+        <p><label><input id="discard-confirmed" type="checkbox"> Forget only the local setup record; leave any GitHub repository unchanged</label></p>
+        <button id="discard" type="button">Discard local setup record</button>
+      </fieldset>
+      <p id="saved"></p>
+      <p>Verification checks current identity, installation access, permissions and branch. Branch rules or later revocation may still reject a write. Solution uploads are not implemented yet.</p>
+    </main>
+  </body>
+</html>

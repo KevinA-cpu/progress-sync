@@ -4,10 +4,13 @@ import { createCaptureService } from '../lib/capture-service';
 import { GRADING_URL, type ProgressReply } from '../lib/progress';
 import { authEnvelopeSchema, type AuthReply } from '../lib/github/schemas';
 import { createGithubService } from '../lib/github/service';
+import { createDestinationService } from '../lib/destination/service';
+import { destinationEnvelopeSchema, type DestinationReply } from '../lib/destination/schemas';
 
 export default defineBackground(() => {
   const capture = createCaptureService();
   const github = createGithubService();
+  const destination = createDestinationService(github);
   const requests = { urls: [GRADING_URL], types: ['main_frame', 'sub_frame'] as const };
   const filter = { urls: requests.urls, types: [...requests.types] };
   browser.webRequest.onBeforeRequest.addListener(capture.request, filter, ['requestBody']);
@@ -18,6 +21,14 @@ export default defineBackground(() => {
     url: [{ hostEquals: 'hdlbits.01xz.net' }],
   });
   browser.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
+    if (destinationEnvelopeSchema.safeParse(message).success) {
+      void destination.message(message, sender).then(sendResponse, () => {
+        console.error('Progress Sync: destination operation failed.');
+        const reply: DestinationReply = { ok: false, error: 'network-error' };
+        sendResponse(reply);
+      });
+      return true;
+    }
     if (authEnvelopeSchema.safeParse(message).success) {
       void github.message(message, sender).then(sendResponse, () => {
         console.error('Progress Sync: GitHub connection request failed.');

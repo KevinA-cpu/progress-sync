@@ -1,7 +1,8 @@
 import { browser, type Browser } from 'wxt/browser';
 import {
   AUTH_EXPIRY_ALARM, AUTH_SESSION_KEY, USER_URL, appConfigSchema, authRequestSchema,
-  AuthFault, githubUserResponseSchema, sessionSchema, type AuthIssue, type AuthReply, type AuthSession, type AuthState,
+  AuthFault, githubUserResponseSchema, sessionSchema,
+  type AuthIssue, type AuthReply, type AuthSession, type AuthState, type ConnectedSession,
 } from './schemas';
 import { githubRequest } from './transport';
 
@@ -247,5 +248,35 @@ export function createGithubService() {
       void serialize(read).catch(() => console.error('Progress Sync: GitHub session expiry could not be checked.'));
     }
   }
-  return { message, ownerClosed, alarm };
+  async function withConnection<T>(
+    action: (session: ConnectedSession, guard: () => Promise<void>, signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const session: ConnectedSession = await serialize(async () => {
+      await state();
+      const current = await read();
+      if (current.status !== 'connected') throw new AuthFault('not-connected');
+      return current;
+    });
+    const controller = new AbortController();
+    const requestId = crypto.randomUUID();
+    requests.set(requestId, controller);
+    async function guard(): Promise<void> {
+      controller.signal.throwIfAborted();
+      const latest = await serialize(read);
+      if (latest.status !== 'connected' || latest.connectionId !== session.connectionId
+        || latest.user.id !== session.user.id || latest.clientId !== session.clientId) {
+        throw new AuthFault('not-allowed');
+      }
+      controller.signal.throwIfAborted();
+    }
+    try {
+      await guard();
+      return await action(session, guard, controller.signal);
+    } finally {
+      requests.delete(requestId);
+    }
+  }
+  return { message, ownerClosed, alarm, withConnection };
 }
+
+export type GithubService = ReturnType<typeof createGithubService>;

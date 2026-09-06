@@ -74,11 +74,12 @@ export const pendingSessionSchema = z.strictObject({
   status: z.literal('authorizing'), attemptId: z.uuid(), clientId: clientIdSchema,
   ownerTabId: z.int().nonnegative(), ownerDocumentId: z.string().min(1),
 });
-const connectedSessionSchema = z.strictObject({
+export const connectedSessionSchema = z.strictObject({
   status: z.literal('connected'), connectionId: z.uuid(), clientId: clientIdSchema,
   token: tokenSchema, expiresAt: z.iso.datetime(), verifiedAt: z.iso.datetime(),
   user: githubUserSchema,
 });
+export type ConnectedSession = z.infer<typeof connectedSessionSchema>;
 export const sessionSchema = z.discriminatedUnion('status', [
   disconnectedSchema, pendingSessionSchema, connectedSessionSchema,
 ]);
