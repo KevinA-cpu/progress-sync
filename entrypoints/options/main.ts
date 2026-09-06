@@ -5,7 +5,7 @@ import { progressReplySchema, type Attempt } from '../../lib/progress';
 import { DELIVERY_KEY, DELIVERY_MESSAGE, DELIVERY_STATE, DELIVERY_TEXT, deliveryCommitUrl } from '../../lib/constants/delivery';
 import { AUTH_SESSION_KEY } from '../../lib/constants/github';
 import { DESTINATION_STORAGE_PREFIX } from '../../lib/constants/destination';
-import { deliveryReplySchema, type DeliveryJob } from '../../lib/delivery/schemas';
+import { deliveryReplySchema, type DeliveryJob, type PublishRequest, type RetryRequest } from '../../lib/delivery/schemas';
 import type { DestinationTarget } from '../../lib/destination/schemas';
 import { initializeRecovery } from './recovery';
 import { renderMetadata, renderSource } from './fields';
@@ -15,6 +15,21 @@ const status = document.querySelector<HTMLParagraphElement>('#status');
 const attempts = document.querySelector<HTMLElement>('#attempts');
 const refresh = document.querySelector<HTMLButtonElement>('#refresh');
 if (!status || !attempts || !refresh) throw new Error(PROGRESS_TEXT.interfaceIncomplete);
+
+async function deliveryAction(
+  button: HTMLButtonElement, state: HTMLElement, request: PublishRequest | RetryRequest,
+): Promise<void> {
+  button.disabled = true;
+  try {
+    const reply = deliveryReplySchema.parse(await browser.runtime.sendMessage(request));
+    if (!reply.ok) throw new Error(reply.error);
+    await load();
+  } catch (error) {
+    state.textContent = error instanceof Error ? error.message : DELIVERY_TEXT.operationFailed;
+    state.setAttribute('role', UI_ROLE.alert);
+    button.disabled = false;
+  }
+}
 
 function renderAttempt(attempt: Attempt, selection: DestinationTarget | null, job?: DeliveryJob): HTMLElement {
   const article = document.createElement('article');
@@ -31,6 +46,9 @@ function renderAttempt(attempt: Attempt, selection: DestinationTarget | null, jo
         break;
       case DELIVERY_STATE.saved:
         state.textContent = DELIVERY_TEXT.saved;
+        break;
+      case DELIVERY_STATE.reconciling:
+        state.textContent = DELIVERY_TEXT.reconciling;
         break;
       case DELIVERY_STATE.blocked:
         state.textContent = DELIVERY_TEXT.blocked(job.detail ?? DELIVERY_TEXT.operationFailed);
@@ -60,6 +78,22 @@ function renderAttempt(attempt: Attempt, selection: DestinationTarget | null, jo
       receipt.rel = 'noopener noreferrer';
       article.append(receipt);
     }
+    if (job.state !== DELIVERY_STATE.saved) {
+      const retry = document.createElement('button');
+      retry.textContent = DELIVERY_TEXT.retry;
+      retry.disabled = !selection || job.state === DELIVERY_STATE.publishing || job.state === DELIVERY_STATE.reconciling;
+      retry.addEventListener(DOM_EVENT.click, async () => {
+        if (!selection) {
+          state.textContent = DELIVERY_TEXT.noDestination;
+          return;
+        }
+        await deliveryAction(retry, state, {
+          type: DELIVERY_MESSAGE.retry, jobId: job.id,
+          expectedConnectionId: selection.connectionId, expectedSelectionId: selection.operationId,
+        });
+      });
+      article.append(retry);
+    }
   }
   if (attempt.source !== null) {
     article.append(renderSource(PROGRESS_TEXT.submittedSource, attempt.source));
@@ -69,19 +103,10 @@ function renderAttempt(attempt: Attempt, selection: DestinationTarget | null, jo
       const publish = document.createElement('button');
       publish.textContent = DELIVERY_TEXT.select(selection.owner, selection.name, selection.branch);
       publish.addEventListener(DOM_EVENT.click, async () => {
-        publish.disabled = true;
-        try {
-          const reply = deliveryReplySchema.parse(await browser.runtime.sendMessage({
-            type: DELIVERY_MESSAGE.publish, attemptId: attempt.id, expectedConnectionId: selection.connectionId,
-            expectedSelectionId: selection.operationId, publicConfirmed: true,
-          }));
-          if (!reply.ok) throw new Error(reply.error);
-          await load();
-        } catch (error) {
-          state.textContent = error instanceof Error ? error.message : DELIVERY_TEXT.operationFailed;
-          state.setAttribute('role', UI_ROLE.alert);
-          publish.disabled = false;
-        }
+        await deliveryAction(publish, state, {
+          type: DELIVERY_MESSAGE.publish, attemptId: attempt.id, expectedConnectionId: selection.connectionId,
+          expectedSelectionId: selection.operationId, publicConfirmed: true,
+        });
       });
       article.append(publish);
     } else {

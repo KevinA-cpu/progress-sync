@@ -2,9 +2,9 @@ import { GITHUB_ORIGIN } from './github';
 
 export const DELIVERY_KEY = 'delivery-jobs-v1';
 export const DELIVERY_MESSAGE_PREFIX = 'delivery:';
-export const DELIVERY_MESSAGE = { list: 'delivery:list', publish: 'delivery:publish' } as const;
+export const DELIVERY_MESSAGE = { list: 'delivery:list', publish: 'delivery:publish', retry: 'delivery:retry' } as const;
 export const DELIVERY_STATE = {
-  pending: 'pending', publishing: 'publishing', blocked: 'blocked', uncertain: 'uncertain', saved: 'saved',
+  pending: 'pending', publishing: 'publishing', reconciling: 'reconciling', blocked: 'blocked', uncertain: 'uncertain', saved: 'saved',
 } as const;
 export const GIT_OBJECT = { blob: 'blob', tree: 'tree', commit: 'commit' } as const;
 export const GIT_MODE = {
@@ -13,16 +13,22 @@ export const GIT_MODE = {
 export const GIT_BLOB_HASH_ALGORITHM = 'SHA-1';
 export const GIT_RECURSIVE = '1';
 export const MAX_TREE_ENTRIES = 100_000;
+export const MAX_METADATA_BYTES = 16 * 1024;
 export const DELIVERY_TEXT = {
   awaiting: 'Accepted - awaiting GitHub delivery',
   saved: 'Saved to GitHub',
+  retry: 'Check GitHub and retry delivery',
+  reconciling: 'Checking the complete publication on GitHub...',
+  reconciliationFailed: 'Publication outcome is uncertain. GitHub inspection failed or was interrupted. The job is retained; retry the check when access is restored.',
+  receiptUnavailable: 'The original complete publication could not be confirmed. The job is retained; no files were overwritten.',
+  legacyUncertain: 'Remote history does not establish a safe retry for this older job. Its result remains unresolved; no files were overwritten.',
   invalidInput: 'Unsupported delivery operation or sender.',
   invalidData: 'Saved delivery data is invalid. It has not been overwritten.',
   invalidAttempt: 'Only a complete, validated accepted snapshot can be published.',
   noDestination: 'Select and verify a public progress repository before publishing this attempt.',
   sessionChanged: 'The account or selected destination changed. This job has not been redirected.',
   invalidResponse: 'GitHub returned an unsupported publication response.',
-  existingPath: 'An attempt path already exists on GitHub. Complete-record reconciliation is required; nothing was overwritten.',
+  existingPath: 'An attempt path already exists on GitHub but its source or metadata is incomplete or inconsistent. No files were overwritten.',
   headChanged: 'The branch changed during publication. No remote work was overwritten.',
   rejected: 'GitHub rejected publication. Check repository permissions, rate limits, branch rules, or concurrent branch changes. The accepted attempt is retained.',
   requestFailed: 'GitHub could not complete publication checks. Review access, rate limits, and service availability.',

@@ -16,11 +16,15 @@ export const GITHUB_PAGINATION = {
   pageSize: 100,
   // Application safety cap, separate from GitHub's maximum items per page.
   maxPages: 100,
+  maxLinkHeaderLength: 8192,
+  nextRelation: 'next',
 } as const;
+export const GITHUB_COMPARISON = { ahead: 'ahead', behind: 'behind', diverged: 'diverged', identical: 'identical' } as const;
 
 export const GITHUB_PERMISSION = { read: 'read', write: 'write' } as const;
 export const REPOSITORY_SELECTION = { all: 'all', selected: 'selected' } as const;
 export const GITHUB_CONTENT = { file: 'file', base64: 'base64' } as const;
+export const GITHUB_TEXT_ENCODING = 'utf-8';
 export const GITHUB_HTTP_STATUS = {
   created: 201, clientErrorStart: 400, unauthorized: 401, forbidden: 403, notFound: 404,
   requestTimeout: 408, conflict: 409, serverErrorStart: 500,

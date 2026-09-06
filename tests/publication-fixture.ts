@@ -24,21 +24,41 @@ const commitSchema = z.strictObject({
 const commitRequestSchema = commitSchema.extend({ parents: z.tuple([shaSchema]) });
 const refRequestSchema = z.strictObject({ sha: shaSchema, force: z.literal(false) });
 const seedFilesSchema = z.record(pathSchema, z.string());
+const fileChangesSchema = z.record(pathSchema, z.string().nullable());
+const metadataPathSegmentsSchema = z.tuple([
+  z.literal('progress'), z.literal('hdlbits'), z.string().regex(/^[a-z0-9][a-z0-9_]{0,127}$/),
+  z.uuid(), z.literal('acceptance.json'),
+]);
+const historyRequestSchema = z.strictObject({
+  sha: shaSchema,
+  path: pathSchema.refine(value => metadataPathSegmentsSchema.safeParse(value.split('/')).success),
+  per_page: z.literal('100'),
+  page: z.string().regex(/^[1-9][0-9]*$/).transform(Number).pipe(z.int().positive()),
+});
+const historyPageSizeSchema = z.int().min(1).max(100);
 type Commit = z.infer<typeof commitSchema>;
 
 interface PublicationFixture {
   head: string;
   files: Map<string, string>;
   writes: Array<{ method: string; path: string; body: unknown }>;
+  reads: Array<{ path: string; page: number | null }>;
   updates: number;
+  refCompletions: number;
+  uniqueCommitIds: boolean;
   requestsValid: boolean;
   writeGate: Promise<void> | null;
+  refGate: Promise<void> | null;
   failAt: WriteStage | null;
   failStatus: number;
+  loseBeforeAt: WriteStage | null;
   loseResponseAt: WriteStage | null;
+  historyPageSize: number | null;
+  historyLinkUrl: string | null;
   advanceBeforeUpdate: boolean;
   onFirstWrite: (() => Promise<void>) | null;
   seedFiles(files: Record<string, string>): void;
+  commitFiles(changes: Record<string, string | null>, message?: string): string;
 }
 
 const base = '/repos/fixture-user/progress-solutions';
@@ -62,6 +82,7 @@ export async function publicationFixture(
     [initialHead, { tree: initialTree, parents: [], message: 'Initial learner files' }],
   ]);
   let historyStarted = false;
+  let commitSequence = 0;
   const server: PublicationFixture = {
     head: initialHead,
     files: new Map([
@@ -71,12 +92,19 @@ export async function publicationFixture(
       })],
     ]),
     writes: [],
+    reads: [],
     updates: 0,
+    refCompletions: 0,
+    uniqueCommitIds: false,
     requestsValid: true,
     writeGate: null,
+    refGate: null,
     failAt: null,
     failStatus: 403,
+    loseBeforeAt: null,
     loseResponseAt: null,
+    historyPageSize: null,
+    historyLinkUrl: null,
     advanceBeforeUpdate: false,
     onFirstWrite: null,
     seedFiles(files) {
@@ -90,6 +118,23 @@ export async function publicationFixture(
       if (hasFileDirectoryCollision(seeded)) throw new Error('Seeded file conflicts with a directory.');
       server.files = seeded;
     },
+    commitFiles(changes, message = 'Unrelated remote update') {
+      const parsed = fileChangesSchema.safeParse(changes);
+      if (!parsed.success) throw new Error('Invalid remote file change.');
+      const parsedMessage = commitSchema.shape.message.safeParse(message);
+      if (!parsedMessage.success) throw new Error('Invalid remote commit message.');
+      if (!commits.has(server.head)) throw new Error('Remote commit parent is missing.');
+      const files = new Map(server.files);
+      for (const [path, content] of Object.entries(parsed.data)) {
+        if (content === null) files.delete(path);
+        else files.set(path, content);
+      }
+      if (hasFileDirectoryCollision(files)) throw new Error('Remote file conflicts with a directory.');
+      startHistory();
+      server.head = storeCommit(storeTree(files), server.head, parsedMessage.data);
+      server.files = files;
+      return server.head;
+    },
   };
 
   function check(condition: unknown, detail: string): asserts condition {
@@ -97,6 +142,13 @@ export async function publicationFixture(
       server.requestsValid = false;
       throw new Error(`Unexpected publication fixture request: ${detail}`);
     }
+  }
+
+  function startHistory() {
+    if (historyStarted) return;
+    // Delay the initial snapshot so collision files can be seeded after onboarding.
+    trees.set(initialTree, new Map(server.files));
+    historyStarted = true;
   }
 
   function storeTree(files: ReadonlyMap<string, string>): string {
@@ -107,7 +159,7 @@ export async function publicationFixture(
 
   function storeCommit(tree: string, parent: string, message: string): string {
     const commit: Commit = { tree, parents: [parent], message };
-    const sha = hash(`commit\0${JSON.stringify(commit)}`);
+    const sha = hash(`commit\0${JSON.stringify(commit)}${server.uniqueCommitIds ? `\0${++commitSequence}` : ''}`);
     if (!commits.has(sha)) commits.set(sha, commit);
     return sha;
   }
@@ -144,13 +196,41 @@ export async function publicationFixture(
     };
   }
 
+  function historyCommitResponse(sha: string, commit: Commit) {
+    const gitCommit = commitResponse(sha, commit);
+    return {
+      sha, url: `${api}/commits/${sha}`,
+      html_url: `https://github.com/fixture-user/progress-solutions/commit/${sha}`,
+      commit: {
+        message: gitCommit.message, tree: gitCommit.tree, url: gitCommit.url,
+        author: gitCommit.author, committer: gitCommit.committer,
+      },
+      parents: gitCommit.parents,
+    };
+  }
+
+  function commitHistory(sha: string) {
+    const history: Array<{ sha: string; commit: Commit }> = [];
+    let current: string | undefined = sha;
+    while (current) {
+      const commit = commits.get(current);
+      check(commit, 'History commit is missing');
+      history.push({ sha: current, commit });
+      current = commit.parents[0];
+    }
+    return history;
+  }
+
   // Register after identity/onboarding fixtures; their routes still own the marker.
   await context.route('https://api.github.com/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
     const path = decodeURIComponent(url.pathname);
     const branchPath = `${base}/branches/${destination.defaultBranch}`;
-    if (path !== branchPath && path !== `${base}/git` && !path.startsWith(`${base}/git/`)) {
+    const historyPath = path === `${base}/commits`;
+    const comparePath = path === `${base}/compare` || path.startsWith(`${base}/compare/`);
+    if (path !== branchPath && path !== `${base}/git` && !path.startsWith(`${base}/git/`)
+      && !historyPath && !comparePath) {
       return route.fallback();
     }
     const method = request.method();
@@ -169,24 +249,79 @@ export async function publicationFixture(
     const commitMatch = /^\/git\/commits\/([0-9a-f]{40})$/.exec(path.slice(base.length));
     const treeMatch = /^\/git\/trees\/([0-9a-f]{40})$/.exec(path.slice(base.length));
     const blobMatch = /^\/git\/blobs\/([0-9a-f]{40})$/.exec(path.slice(base.length));
+    const compareMatch = /^\/compare\/([0-9a-f]{40})\.\.\.([0-9a-f]{40})$/.exec(path.slice(base.length));
     const stage: WriteStage | null = method === 'POST' && path === `${base}/git/trees` ? 'tree'
       : method === 'POST' && path === `${base}/git/commits` ? 'commit'
         : method === 'PATCH' && path === `${base}/git/refs/heads/${destination.defaultBranch}` ? 'ref' : null;
-    check((method === 'GET' && (commitMatch || treeMatch || blobMatch)) || stage, `${method} ${path}`);
-    if (treeMatch) {
+    check((method === 'GET' && (commitMatch || treeMatch || blobMatch || compareMatch || historyPath)) || stage,
+      `${method} ${path}`);
+    let historyQuery: z.infer<typeof historyRequestSchema> | null = null;
+    if (historyPath) {
+      const parsed = historyRequestSchema.safeParse(Object.fromEntries(url.searchParams));
+      check(url.searchParams.size === 4 && parsed.success, `${method} ${path}: expected pinned path history`);
+      historyQuery = parsed.data;
+    } else if (treeMatch) {
       check(url.searchParams.size === 1 && ['1', 'true'].includes(url.searchParams.get('recursive') ?? ''),
         `${method} ${path}: expected recursive tree`);
     } else {
       check(url.search === '', `${method} ${path}: query parameters`);
     }
-    if (method === 'GET') check(request.postData() === null, `${method} ${path}: unexpected body`);
+    if (method === 'GET') {
+      check(request.postData() === null, `${method} ${path}: unexpected body`);
+      server.reads.push({ path, page: historyQuery?.page ?? null });
+    }
     if (!destination.exists || destination.empty) {
       return route.fulfill({ status: 404, json: { message: 'Not found' } });
     }
-    if (!historyStarted) {
-      // Delay the initial snapshot so collision files can be seeded after onboarding.
-      trees.set(initialTree, new Map(server.files));
-      historyStarted = true;
+    startHistory();
+    if (compareMatch) {
+      const [, baseSha, headSha] = compareMatch;
+      check(baseSha && headSha, 'Missing comparison SHA');
+      const baseCommit = commits.get(baseSha);
+      if (!baseCommit || !commits.has(headSha)) {
+        return route.fulfill({ status: 404, json: { message: 'Not found' } });
+      }
+      const baseHistory = commitHistory(baseSha);
+      const headHistory = commitHistory(headSha);
+      const baseAncestors = new Set(baseHistory.map(entry => entry.sha));
+      const mergeBase = headHistory.find(entry => baseAncestors.has(entry.sha));
+      check(mergeBase, 'Comparison merge base is missing');
+      const ahead = headHistory.findIndex(entry => entry.sha === mergeBase.sha);
+      const behind = baseHistory.findIndex(entry => entry.sha === mergeBase.sha);
+      const status = baseSha === headSha ? 'identical' : behind === 0 ? 'ahead' : ahead === 0 ? 'behind' : 'diverged';
+      return route.fulfill({ json: {
+        url: `${api}/compare/${baseSha}...${headSha}`, status,
+        ahead_by: ahead, behind_by: behind, total_commits: ahead,
+        base_commit: historyCommitResponse(baseSha, baseCommit),
+        merge_base_commit: historyCommitResponse(mergeBase.sha, mergeBase.commit),
+        commits: headHistory.slice(0, ahead).reverse().map(entry => historyCommitResponse(entry.sha, entry.commit)),
+        files: [],
+      } });
+    }
+    if (historyQuery) {
+      if (!commits.has(historyQuery.sha)) {
+        return route.fulfill({ status: 404, json: { message: 'Not found' } });
+      }
+      const metadataPath = historyQuery.path;
+      const history = commitHistory(historyQuery.sha).filter(({ commit }, index, entries) => {
+        const files = trees.get(commit.tree);
+        check(files, 'History commit tree is missing');
+        const parent = entries[index + 1];
+        const parentFiles = parent ? trees.get(parent.commit.tree) : undefined;
+        check(!parent || parentFiles, 'History parent tree is missing');
+        return files.get(metadataPath) !== parentFiles?.get(metadataPath);
+      });
+      const pageSize = historyPageSizeSchema.safeParse(server.historyPageSize ?? 100);
+      check(pageSize.success, 'Invalid history page size');
+      const offset = (historyQuery.page - 1) * pageSize.data;
+      const nextQuery = new URLSearchParams({
+        sha: historyQuery.sha, path: metadataPath, per_page: '100', page: String(historyQuery.page + 1),
+      });
+      const nextUrl = server.historyLinkUrl ?? `${api}/commits?${nextQuery}`;
+      return route.fulfill({
+        headers: offset + pageSize.data < history.length ? { link: `<${nextUrl}>; rel="next"` } : {},
+        json: history.slice(offset, offset + pageSize.data).map(entry => historyCommitResponse(entry.sha, entry.commit)),
+      });
     }
     if (commitMatch) {
       const sha = commitMatch[1];
@@ -228,10 +363,13 @@ export async function publicationFixture(
     }
     const firstWrite = server.writes.length === 0;
     server.writes.push({ method, path, body });
+    const refGate = stage === 'ref' ? server.refGate : null;
+    if (stage === 'ref') server.refGate = null;
     if (firstWrite) {
       await server.onFirstWrite?.();
       if (server.writeGate) await server.writeGate;
     }
+    if (refGate) await refGate;
     const invalid = (message: string) => {
       server.requestsValid = false;
       return route.fulfill({ status: 422, json: { message } });
@@ -256,6 +394,7 @@ export async function publicationFixture(
         for (const entry of entries.data) files.set(entry.path, entry.content);
         if (hasFileDirectoryCollision(files)) return invalid('File conflicts with a directory.');
         if (server.failAt === stage) return fail();
+        if (server.loseBeforeAt === stage) return route.abort('failed');
         const sha = storeTree(files);
         response = treeResponse(sha, files);
         break;
@@ -266,6 +405,7 @@ export async function publicationFixture(
         const { tree, parents: [parent], message } = parsed.data;
         if (!commits.has(parent) || !trees.has(tree)) return invalid('Unknown tree or parent.');
         if (server.failAt === stage) return fail();
+        if (server.loseBeforeAt === stage) return route.abort('failed');
         const sha = storeCommit(tree, parent, message);
         const commit = commits.get(sha);
         check(commit, 'Created commit is missing');
@@ -276,23 +416,24 @@ export async function publicationFixture(
         const parsed = refRequestSchema.safeParse(body);
         if (!parsed.success) return invalid('Expected a commit SHA and force: false.');
         if (server.failAt === stage) return fail();
+        if (server.loseBeforeAt === stage) return route.abort('failed');
         if (server.advanceBeforeUpdate) {
           server.advanceBeforeUpdate = false;
-          const files = new Map(server.files);
-          files.set('concurrent.txt', 'Another writer.\n');
-          server.head = storeCommit(storeTree(files), server.head, 'Unrelated concurrent update');
-          server.files = files;
+          server.commitFiles({ 'concurrent.txt': 'Another writer.\n' }, 'Unrelated concurrent update');
         }
-        const commit = commits.get(parsed.data.sha);
-        if (!commit || commit.parents.length !== 1 || commit.parents[0] !== server.head) {
-          return route.fulfill({ status: 422, json: { message: 'Update is not a fast forward' } });
+        if (parsed.data.sha !== server.head) {
+          const commit = commits.get(parsed.data.sha);
+          if (!commit || commit.parents.length !== 1 || commit.parents[0] !== server.head) {
+            return route.fulfill({ status: 422, json: { message: 'Update is not a fast forward' } });
+          }
+          const files = trees.get(commit.tree);
+          check(files, 'Proposed commit tree is missing');
+          if ([...server.files.keys()].some(file => !files.has(file))) return invalid('Publication cannot delete files.');
+          server.head = parsed.data.sha;
+          server.files = new Map(files);
+          server.updates++;
         }
-        const files = trees.get(commit.tree);
-        check(files, 'Proposed commit tree is missing');
-        if ([...server.files.keys()].some(file => !files.has(file))) return invalid('Publication cannot delete files.');
-        server.head = parsed.data.sha;
-        server.files = new Map(files);
-        server.updates++;
+        server.refCompletions++;
         response = {
           ref: `refs/heads/${destination.defaultBranch}`, url: `${api}/git/refs/heads/${encodeURIComponent(destination.defaultBranch)}`,
           object: { type: 'commit', sha: server.head, url: `${api}/git/commits/${server.head}` },

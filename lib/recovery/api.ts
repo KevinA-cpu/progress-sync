@@ -1,12 +1,13 @@
 import { z } from '../schema';
-import { DELIVERY_PATH, GIT_MODE, GIT_OBJECT, GIT_RECURSIVE, deliveryPaths, deliveryRoot } from '../constants/delivery';
+import { DELIVERY_PATH, GIT_MODE, GIT_OBJECT, GIT_RECURSIVE, MAX_METADATA_BYTES, deliveryPaths, deliveryRoot } from '../constants/delivery';
 import { MAX_SOURCE_BYTES } from '../constants/progress';
 import {
-  MAX_METADATA_BYTES, RECOVERY_ENCODING, RECOVERY_ENTRY, RECOVERY_ISSUE, RECOVERY_SOURCE_SUFFIX, RECOVERY_TEXT,
+  RECOVERY_ENTRY, RECOVERY_ISSUE, RECOVERY_SOURCE_SUFFIX, RECOVERY_TEXT,
 } from '../constants/recovery';
 import { destinationApi } from '../destination/api';
 import type { DestinationTarget } from '../destination/schemas';
 import { githubRest } from '../github/rest';
+import { decodeGitBlob, InvalidRemoteFile } from '../github/blob';
 import type { ConnectedSession } from '../github/schemas';
 import { acceptanceRecordSchema, gitCommitSchema } from '../delivery/schemas';
 import { hashSource, submittedSourceSchema } from '../progress';
@@ -14,8 +15,6 @@ import {
   parseRecovery, RecoveryFault, remoteBlobSchema, remotePathSchema, remoteTreeSchema,
   type RecoveredEntry, type RecoveryIssue, type RemoteTreeEntry,
 } from './schemas';
-
-class InvalidRemoteFile extends Error {}
 
 export async function recoverProgress(
   target: DestinationTarget, session: ConnectedSession, guard: () => Promise<void>, signal: AbortSignal,
@@ -74,16 +73,7 @@ export async function recoverProgress(
     await guard();
     const parsed = remoteBlobSchema.safeParse(response.data);
     if (!parsed.success || parsed.data.sha !== entry.sha || parsed.data.size > limit) throw new InvalidRemoteFile();
-    try {
-      const bytes = Uint8Array.from(atob(parsed.data.content.replace(/\s/g, '')), character => character.charCodeAt(0));
-      if (bytes.length !== parsed.data.size || bytes.length > limit) throw new InvalidRemoteFile();
-      return new TextDecoder(RECOVERY_ENCODING, { fatal: true, ignoreBOM: true }).decode(bytes);
-    } catch (error) {
-      if (error instanceof InvalidRemoteFile || error instanceof DOMException || error instanceof TypeError) {
-        throw new InvalidRemoteFile();
-      }
-      throw error;
-    }
+    return decodeGitBlob(parsed.data.content, parsed.data.size, limit);
   }
   async function readSource(entry: RemoteTreeEntry | undefined): Promise<{ source: string | null; issue: RecoveryIssue | null }> {
     if (!entry) return { source: null, issue: RECOVERY_ISSUE.sourceMissing };

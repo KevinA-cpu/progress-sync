@@ -8,10 +8,8 @@ export const RECOVERY_MESSAGE = { list: 'recovery:list', refresh: 'recovery:refr
 export const RECOVERY_STATUS = { loading: 'loading', ready: 'ready', failed: 'failed' } as const;
 export const RECOVERY_ENTRY = { recorded: 'recorded', unverified: 'unverified' } as const;
 export const MAX_REMOTE_PATH_LENGTH = 4096;
-export const MAX_METADATA_BYTES = 16 * 1024;
 // Allow base64 line wrapping without relaxing the decoded source byte limit.
 export const MAX_ENCODED_BLOB_CHARACTERS = 8 * Math.ceil(MAX_SOURCE_BYTES / 3);
-export const RECOVERY_ENCODING = 'utf-8';
 export const RECOVERY_ISSUE = {
   metadataMissing: 'metadata-missing', metadataInvalid: 'metadata-invalid', sourceMissing: 'source-missing',
   sourceInvalid: 'source-invalid', identityMismatch: 'identity-mismatch', hashMismatch: 'hash-mismatch',
