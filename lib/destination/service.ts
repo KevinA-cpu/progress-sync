@@ -149,6 +149,7 @@ export function createDestinationService(github: GithubService) {
           } catch (error) {
             if (error instanceof GithubWriteRejected) {
               await browser.storage.local.remove(key(user.id));
+              if (error.status === GITHUB_HTTP_STATUS.unauthorized) throw error;
               throw new DestinationFault(DESTINATION_ISSUE.creationRejected);
             }
             throw new DestinationFault(DESTINATION_ISSUE.creationUncertain);
@@ -218,6 +219,7 @@ export function createDestinationService(github: GithubService) {
           if (error instanceof GithubWriteRejected) {
             journal.phase = DESTINATION_PHASE.initializationRejected;
             await save(journal);
+            if (error.status === GITHUB_HTTP_STATUS.unauthorized) throw error;
             throw new DestinationFault(DESTINATION_ISSUE.initializationRejected);
           }
           throw new DestinationFault(DESTINATION_ISSUE.initializationUncertain);
@@ -251,8 +253,11 @@ export function createDestinationService(github: GithubService) {
       if (error instanceof AuthFault) {
         return { ok: false, error: error.issue === AUTH_ISSUE.notConnected ? DESTINATION_ISSUE.notConnected : DESTINATION_ISSUE.sessionChanged };
       }
-      if (githubResponseStatus(error) === GITHUB_HTTP_STATUS.unauthorized
-        || githubResponseStatus(error) === GITHUB_HTTP_STATUS.forbidden) {
+      const status = error instanceof GithubWriteRejected ? error.status : githubResponseStatus(error);
+      if (status === GITHUB_HTTP_STATUS.unauthorized) {
+        return { ok: false, error: DESTINATION_ISSUE.notConnected };
+      }
+      if (status === GITHUB_HTTP_STATUS.forbidden) {
         return { ok: false, error: DESTINATION_ISSUE.permissionDenied };
       }
       console.warn(DESTINATION_TEXT.verificationIncomplete);

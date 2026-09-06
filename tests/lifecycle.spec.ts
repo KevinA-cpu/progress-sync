@@ -262,3 +262,78 @@ test('a rejected identity read pauses publication without logging credentials or
   });
   expect(auth.logs.some(line => line.includes('SENSITIVE_FIXTURE_DETAIL') || line.includes('assign one'))).toBe(false);
 });
+
+test('recovery discovering revoked authorization pauses retained delivery and clears the rejected credential', async ({
+  extensionContext, progress, problem,
+}) => {
+  const { server, auth, connection } = await setup(extensionContext, progress);
+  server.loseBeforeAt = 'ref';
+  await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
+  await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect(progress.getByText('Publication outcome is uncertain.', { exact: false })).toBeVisible();
+  const before = await progress.evaluate(() => chrome.runtime.sendMessage({ type: 'delivery:list' }));
+  auth.identityStatus = 401;
+  await progress.getByRole('button', { name: 'Refresh saved progress' }).click();
+  await expect(connection.getByRole('status')).toHaveText('GitHub authorization was rejected. Connect again.');
+  await expect(progress.getByRole('button', { name: 'Check GitHub and retry delivery' })).toBeDisabled();
+  expect((await credentialSummary(progress)).accessInSession).toBe(false);
+  const after = await progress.evaluate(() => chrome.runtime.sendMessage({ type: 'delivery:list' }));
+  expect(after.jobs).toEqual(before.jobs);
+  expect(after.selection).toBeNull();
+});
+
+for (const mutation of ['creation', 'initialization'] as const) {
+  test(`a rejected ${mutation} credential cannot stay authorized while original delivery work is retained`, async ({
+    extensionContext, progress, problem,
+  }) => {
+    const { server, target, page, connection } = await setup(extensionContext, progress);
+    server.loseBeforeAt = 'ref';
+    await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
+    await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+    await expect(progress.getByText('Publication outcome is uncertain.', { exact: false })).toBeVisible();
+    const before = await progress.evaluate(() => chrome.runtime.sendMessage({ type: 'delivery:list' }));
+    switch (mutation) {
+      case 'creation':
+        target.exists = false;
+        await extensionContext.route('https://api.github.com/user/repos', route =>
+          route.fulfill({ status: 401, json: { message: 'SYNTHETIC_REJECTED_CREDENTIAL' } }));
+        await page.getByRole('button', { name: 'Create public repository', exact: true }).click();
+        break;
+      case 'initialization':
+        target.empty = true;
+        target.marker = false;
+        await extensionContext.route('https://api.github.com/repos/fixture-user/progress-solutions/contents/.progress-sync.json',
+          route => route.request().method() === 'PUT'
+            ? route.fulfill({ status: 401, json: { message: 'SYNTHETIC_REJECTED_CREDENTIAL' } }) : route.fallback());
+        await page.getByLabel('Initialize this empty or previously requested repository with a Progress Sync marker').check();
+        await page.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
+        break;
+    }
+    await expect(connection.getByRole('status')).toHaveText('GitHub authorization was rejected. Connect again.');
+    expect((await credentialSummary(progress)).accessInSession).toBe(false);
+    const after = await progress.evaluate(() => chrome.runtime.sendMessage({ type: 'delivery:list' }));
+    expect(after.jobs).toEqual(before.jobs);
+    expect(after.selection).toBeNull();
+  });
+}
+
+test('recovery discovering lost repository access pauses delivery until access is verified again', async ({
+  extensionContext, progress, problem,
+}) => {
+  const { server, target, page } = await setup(extensionContext, progress);
+  server.loseBeforeAt = 'ref';
+  await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
+  await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect(progress.getByText('Publication outcome is uncertain.', { exact: false })).toBeVisible();
+  const before = await progress.evaluate(() => chrome.runtime.sendMessage({ type: 'delivery:list' }));
+  target.included = false;
+  await progress.getByRole('button', { name: 'Refresh saved progress' }).click();
+  await expect(progress.getByRole('button', { name: 'Check GitHub and retry delivery' })).toBeDisabled();
+  const paused = await progress.evaluate(() => chrome.runtime.sendMessage({ type: 'delivery:list' }));
+  expect(paused.jobs).toEqual(before.jobs);
+  expect(paused.selection).toBeNull();
+  target.included = true;
+  await page.getByRole('button', { name: 'Verify pending or saved repository' }).click();
+  await expect(page.getByRole('status')).toContainText('Verified destination:');
+  await expect(progress.getByRole('button', { name: 'Check GitHub and retry delivery' })).toBeEnabled();
+});

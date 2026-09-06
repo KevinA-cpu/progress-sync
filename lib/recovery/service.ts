@@ -71,7 +71,9 @@ export function createRecoveryService(github: GithubService, destination: Destin
           };
           await save(state, current);
         }
-        throw new RecoveryFault(errorMessage(error, signal.aborted));
+        await destination.pauseAfterFailure(target, error);
+        if (signal.aborted) throw new RecoveryFault(errorMessage(error, true));
+        throw error;
       } finally {
         if (current === generation) activeKey = null;
       }
