@@ -75,13 +75,15 @@ export async function authorizeDevice(
     } catch (error) {
       if (signal.aborted) throw new AuthFault('cancelled');
       if (Date.now() >= deadline) throw new AuthFault('flow-expired');
-      const code = oauthErrorCode(error);
-      if (code === 'authorization_pending') continue;
-      if (code === 'slow_down') {
-        interval += 5000;
-        continue;
+      switch (oauthErrorCode(error)) {
+        case 'authorization_pending':
+          continue;
+        case 'slow_down':
+          interval += 5000;
+          continue;
+        default:
+          throw new AuthFault(authIssue(error));
       }
-      throw new AuthFault(authIssue(error));
     }
   }
 }

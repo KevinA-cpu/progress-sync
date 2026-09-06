@@ -27,16 +27,17 @@ async function loadConfig(): Promise<{ clientId: string } | { issue: AuthIssue }
 }
 
 function publicState(session: AuthSession): AuthState {
-  if (session.status === 'authorizing') {
-    return { status: session.status, attemptId: session.attemptId, clientId: session.clientId };
+  switch (session.status) {
+    case 'authorizing':
+      return { status: session.status, attemptId: session.attemptId, clientId: session.clientId };
+    case 'connected':
+      return {
+        status: session.status, user: session.user,
+        expiresAt: session.expiresAt, verifiedAt: session.verifiedAt,
+      };
+    case 'disconnected':
+      return session;
   }
-  if (session.status === 'connected') {
-    return {
-      status: session.status, user: session.user,
-      expiresAt: session.expiresAt, verifiedAt: session.verifiedAt,
-    };
-  }
-  return session;
 }
 
 export function createGithubService() {
@@ -126,111 +127,118 @@ export function createGithubService() {
     const parsed = authRequestSchema.safeParse(value);
     if (!parsed.success) return { ok: false, error: 'not-allowed' };
     const input = parsed.data;
-    if (input.type === 'github:state') {
-      return serialize(async () => ({ ok: true, state: await state() }));
-    }
-    if (input.type === 'github:disconnect') {
-      return serialize(async () => {
-        for (const controller of requests.values()) controller.abort();
-        const disconnected = { status: 'disconnected', issue: 'not-connected' } as const;
-        await store(disconnected);
-        return { ok: true, state: disconnected };
-      });
-    }
-    if (!connectionPage) return { ok: false, error: 'not-allowed' };
-    if (input.type === 'github:begin') {
-      return serialize(async () => {
-        const settings = await config;
-        if ('issue' in settings) return { ok: false, error: settings.issue };
-        for (const controller of requests.values()) controller.abort();
-        const pending: AuthSession = {
-          status: 'authorizing', attemptId: input.attemptId, clientId: settings.clientId,
-          ownerTabId, ownerDocumentId,
-        };
-        await store(pending);
-        return { ok: true, state: publicState(pending) };
-      });
-    }
-    if (input.type === 'github:permit' || input.type === 'github:cancel') {
-      return serialize(async () => {
-        const session = await read();
-        if (!owns(session, input.attemptId, sender)) return { ok: false, error: 'not-allowed' };
-        if (input.type === 'github:permit') return { ok: true, state: publicState(session) };
-        requests.get(input.attemptId)?.abort();
-        const cancelled = { status: 'disconnected', issue: input.issue } as const;
-        await store(cancelled);
-        return { ok: true, state: cancelled };
-      });
-    }
-    if (input.type === 'github:check') {
-      const previous = await serialize(read);
-      if (previous.status !== 'connected') return { ok: false, error: 'not-allowed' };
-      const controller = new AbortController();
-      requests.set(previous.connectionId, controller);
-      let user;
-      try {
-        user = await verifyIdentity(previous.token, controller.signal);
-      } catch {
-        return serialize(async () => {
-          const latest = await read();
-          if (latest.status === 'connected' && latest.connectionId === previous.connectionId) {
-            await store({ status: 'disconnected', issue: 'identity-failed' });
-          }
-          return { ok: false, error: 'identity-failed' };
-        });
-      } finally {
-        requests.delete(previous.connectionId);
-      }
-      return serialize(async () => {
-        const latest = await read();
-        if (latest.status !== 'connected' || latest.connectionId !== previous.connectionId) {
-          return { ok: false, error: 'not-allowed' };
-        }
-        if (user.id !== latest.user.id) {
-          await store({ status: 'disconnected', issue: 'identity-failed' });
-          return { ok: false, error: 'identity-failed' };
-        }
-        const verified = { ...latest, user, verifiedAt: new Date().toISOString() };
-        await store(verified);
-        return { ok: true, state: publicState(verified) };
-      });
-    }
-    const previous = await serialize(read);
-    if (!owns(previous, input.attemptId, sender) || previous.status !== 'authorizing') {
+    if (!connectionPage && input.type !== 'github:state' && input.type !== 'github:disconnect') {
       return { ok: false, error: 'not-allowed' };
     }
-    if (Date.parse(input.credentials.expiresAt) <= Date.now()) {
-      return { ok: false, error: 'expired' };
-    }
-    const controller = new AbortController();
-    requests.set(input.attemptId, controller);
-    let user;
-    try {
-      user = await verifyIdentity(input.credentials.token, controller.signal);
-    } catch {
-      return serialize(async () => {
-        const latest = await read();
-        if (owns(latest, input.attemptId, sender)) {
-          await store({ status: 'disconnected', issue: 'identity-failed' });
+    switch (input.type) {
+      case 'github:state':
+        return serialize(async () => ({ ok: true, state: await state() }));
+      case 'github:disconnect':
+        return serialize(async () => {
+          for (const controller of requests.values()) controller.abort();
+          const disconnected = { status: 'disconnected', issue: 'not-connected' } as const;
+          await store(disconnected);
+          return { ok: true, state: disconnected };
+        });
+      case 'github:begin':
+        return serialize(async () => {
+          const settings = await config;
+          if ('issue' in settings) return { ok: false, error: settings.issue };
+          for (const controller of requests.values()) controller.abort();
+          const pending: AuthSession = {
+            status: 'authorizing', attemptId: input.attemptId, clientId: settings.clientId,
+            ownerTabId, ownerDocumentId,
+          };
+          await store(pending);
+          return { ok: true, state: publicState(pending) };
+        });
+      case 'github:permit':
+        return serialize(async () => {
+          const session = await read();
+          if (!owns(session, input.attemptId, sender)) return { ok: false, error: 'not-allowed' };
+          return { ok: true, state: publicState(session) };
+        });
+      case 'github:cancel':
+        return serialize(async () => {
+          const session = await read();
+          if (!owns(session, input.attemptId, sender)) return { ok: false, error: 'not-allowed' };
+          requests.get(input.attemptId)?.abort();
+          const cancelled = { status: 'disconnected', issue: input.issue } as const;
+          await store(cancelled);
+          return { ok: true, state: cancelled };
+        });
+      case 'github:check': {
+        const previous = await serialize(read);
+        if (previous.status !== 'connected') return { ok: false, error: 'not-allowed' };
+        const controller = new AbortController();
+        requests.set(previous.connectionId, controller);
+        let user;
+        try {
+          user = await verifyIdentity(previous.token, controller.signal);
+        } catch {
+          return serialize(async () => {
+            const latest = await read();
+            if (latest.status === 'connected' && latest.connectionId === previous.connectionId) {
+              await store({ status: 'disconnected', issue: 'identity-failed' });
+            }
+            return { ok: false, error: 'identity-failed' };
+          });
+        } finally {
+          requests.delete(previous.connectionId);
         }
-        return { ok: false, error: 'identity-failed' };
-      });
-    } finally {
-      requests.delete(input.attemptId);
-    }
-    return serialize(async () => {
-      const latest = await read();
-      if (!owns(latest, input.attemptId, sender) || controller.signal.aborted) {
-        return { ok: false, error: 'not-allowed' };
+        return serialize(async () => {
+          const latest = await read();
+          if (latest.status !== 'connected' || latest.connectionId !== previous.connectionId) {
+            return { ok: false, error: 'not-allowed' };
+          }
+          if (user.id !== latest.user.id) {
+            await store({ status: 'disconnected', issue: 'identity-failed' });
+            return { ok: false, error: 'identity-failed' };
+          }
+          const verified = { ...latest, user, verifiedAt: new Date().toISOString() };
+          await store(verified);
+          return { ok: true, state: publicState(verified) };
+        });
       }
-      if (Date.parse(input.credentials.expiresAt) <= Date.now()) return { ok: false, error: 'expired' };
-      const connected: AuthSession = {
-        status: 'connected', connectionId: input.attemptId, clientId: previous.clientId,
-        ...input.credentials, user, verifiedAt: new Date().toISOString(),
-      };
-      await store(connected);
-      return { ok: true, state: publicState(connected) };
-    });
+      case 'github:complete': {
+        const previous = await serialize(read);
+        if (!owns(previous, input.attemptId, sender) || previous.status !== 'authorizing') {
+          return { ok: false, error: 'not-allowed' };
+        }
+        if (Date.parse(input.credentials.expiresAt) <= Date.now()) {
+          return { ok: false, error: 'expired' };
+        }
+        const controller = new AbortController();
+        requests.set(input.attemptId, controller);
+        let user;
+        try {
+          user = await verifyIdentity(input.credentials.token, controller.signal);
+        } catch {
+          return serialize(async () => {
+            const latest = await read();
+            if (owns(latest, input.attemptId, sender)) {
+              await store({ status: 'disconnected', issue: 'identity-failed' });
+            }
+            return { ok: false, error: 'identity-failed' };
+          });
+        } finally {
+          requests.delete(input.attemptId);
+        }
+        return serialize(async () => {
+          const latest = await read();
+          if (!owns(latest, input.attemptId, sender) || controller.signal.aborted) {
+            return { ok: false, error: 'not-allowed' };
+          }
+          if (Date.parse(input.credentials.expiresAt) <= Date.now()) return { ok: false, error: 'expired' };
+          const connected: AuthSession = {
+            status: 'connected', connectionId: input.attemptId, clientId: previous.clientId,
+            ...input.credentials, user, verifiedAt: new Date().toISOString(),
+          };
+          await store(connected);
+          return { ok: true, state: publicState(connected) };
+        });
+      }
+    }
   }
 
   function ownerClosed(tabId: number): void {

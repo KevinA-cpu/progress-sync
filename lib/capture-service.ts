@@ -99,16 +99,21 @@ export function createCaptureService() {
       || frame.parentDocumentId !== attempt.provenance.parentDocumentId
       || result.observation.problemId !== attempt.problemId) {
       unverify(operation, 'The result could not be tied to this submission. Reload and resubmit.');
-    } else if (result.observation.verdict !== 'success') {
-      unverify(operation, result.observation.verdict === 'failure'
-        ? 'HDLBits did not accept this submission.'
-        : 'The grading result is unsupported or ambiguous. Reload and resubmit.',
-      result.observation.verdict === 'unknown');
     } else {
-      attempt.state = 'accepted';
-      attempt.reason = 'Accepted locally - not saved to GitHub';
-      attempt.observedAt = new Date().toISOString();
-      attempt.provenance.resultDocumentId = documentId;
+      switch (result.observation.verdict) {
+        case 'success':
+          attempt.state = 'accepted';
+          attempt.reason = 'Accepted locally - not saved to GitHub';
+          attempt.observedAt = new Date().toISOString();
+          attempt.provenance.resultDocumentId = documentId;
+          break;
+        case 'failure':
+          unverify(operation, 'HDLBits did not accept this submission.', false);
+          break;
+        case 'unknown':
+          unverify(operation, 'The grading result is unsupported or ambiguous. Reload and resubmit.', true);
+          break;
+      }
     }
     await save();
     operations.delete(attempt.provenance.requestId);

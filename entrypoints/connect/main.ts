@@ -33,14 +33,19 @@ function render(state: AuthState): void {
   disconnect.disabled = state.status !== 'connected' && state.status !== 'authorizing';
   check.disabled = state.status !== 'connected';
   details.textContent = '';
-  if (state.status === 'connected') {
-    status.textContent = `Connected as ${state.user.login}`;
-    details.textContent = `Identity verified at ${state.verifiedAt}. Session expires at ${state.expiresAt}.`;
-  } else if (state.status === 'authorizing') {
-    status.textContent = active?.id === state.attemptId
-      ? 'Waiting for GitHub authorization...' : 'Authorization is in progress in another connection tab.';
-  } else {
-    status.textContent = issueMessages[state.issue];
+  switch (state.status) {
+    case 'connected':
+      status.textContent = `Connected as ${state.user.login}`;
+      details.textContent = `Identity verified at ${state.verifiedAt}. Session expires at ${state.expiresAt}.`;
+      break;
+    case 'authorizing':
+      status.textContent = active?.id === state.attemptId
+        ? 'Waiting for GitHub authorization...' : 'Authorization is in progress in another connection tab.';
+      break;
+    case 'disconnected':
+    case 'unavailable':
+      status.textContent = issueMessages[state.issue];
+      break;
   }
   if (state.status !== 'authorizing' || active?.id !== state.attemptId) challenge.hidden = true;
 }
