@@ -102,9 +102,17 @@ export function createDestinationService(github: GithubService) {
     const parsed = destinationRequestSchema.safeParse(value);
     if (!parsed.success) return { ok: false, error: DESTINATION_ISSUE.invalidInput };
     const input = parsed.data;
+    let verificationTarget: DestinationTarget | null = null;
     const action = queue.then(() => github.withConnection(async (session, guard, signal): Promise<DestinationReply> => {
       if (input.type !== DESTINATION_MESSAGE.load && input.expectedConnectionId !== session.connectionId) {
         throw new DestinationFault(DESTINATION_ISSUE.sessionChanged);
+      }
+      if (input.type === DESTINATION_MESSAGE.verify) {
+        try {
+          verificationTarget = await selection(session);
+        } catch (error) {
+          if (!(error instanceof DestinationFault && error.issue === DESTINATION_ISSUE.selectionRequired)) throw error;
+        }
       }
       const api = destinationApi(session, guard, signal);
       const user = await api.identity();
@@ -249,16 +257,17 @@ export function createDestinationService(github: GithubService) {
     try {
       return await action;
     } catch (error) {
+      if (verificationTarget) await pauseAfterFailure(verificationTarget, error);
       if (error instanceof DestinationFault) return { ok: false, error: error.issue };
       if (error instanceof AuthFault) {
         return { ok: false, error: error.issue === AUTH_ISSUE.notConnected ? DESTINATION_ISSUE.notConnected : DESTINATION_ISSUE.sessionChanged };
       }
       const status = error instanceof GithubWriteRejected ? error.status : githubResponseStatus(error);
-      if (status === GITHUB_HTTP_STATUS.unauthorized) {
-        return { ok: false, error: DESTINATION_ISSUE.notConnected };
-      }
-      if (status === GITHUB_HTTP_STATUS.forbidden) {
-        return { ok: false, error: DESTINATION_ISSUE.permissionDenied };
+      switch (status) {
+        case GITHUB_HTTP_STATUS.unauthorized:
+          return { ok: false, error: DESTINATION_ISSUE.notConnected };
+        case GITHUB_HTTP_STATUS.forbidden:
+          return { ok: false, error: DESTINATION_ISSUE.permissionDenied };
       }
       console.warn(DESTINATION_TEXT.verificationIncomplete);
       return { ok: false, error: DESTINATION_ISSUE.networkError };

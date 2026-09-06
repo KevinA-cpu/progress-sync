@@ -337,3 +337,27 @@ test('recovery discovering lost repository access pauses delivery until access i
   await expect(page.getByRole('status')).toContainText('Verified destination:');
   await expect(progress.getByRole('button', { name: 'Check GitHub and retry delivery' })).toBeEnabled();
 });
+
+test('failed explicit destination verification pauses previously eligible pending work', async ({
+  extensionContext, progress, problem,
+}) => {
+  const { server, target, page } = await setup(extensionContext, progress);
+  server.loseBeforeAt = 'ref';
+  await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
+  await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect(progress.getByText('Publication outcome is uncertain.', { exact: false })).toBeVisible();
+  const before = await progress.evaluate(() => chrome.runtime.sendMessage({ type: 'delivery:list' }));
+  target.included = false;
+  await page.getByRole('button', { name: 'Verify pending or saved repository' }).click();
+  await expect(page.getByRole('status')).toHaveText(
+    'The repository is not accessible to the selected App installation. Select it on GitHub, then verify again.',
+  );
+  await expect(progress.getByRole('button', { name: 'Check GitHub and retry delivery' })).toBeDisabled();
+  const paused = await progress.evaluate(() => chrome.runtime.sendMessage({ type: 'delivery:list' }));
+  expect(paused.jobs).toEqual(before.jobs);
+  expect(paused.selection).toBeNull();
+  target.included = true;
+  await page.getByRole('button', { name: 'Verify pending or saved repository' }).click();
+  await expect(page.getByRole('status')).toContainText('Verified destination:');
+  await expect(progress.getByRole('button', { name: 'Check GitHub and retry delivery' })).toBeEnabled();
+});
