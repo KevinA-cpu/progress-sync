@@ -1,10 +1,11 @@
 # Progress Sync
 
-Progress Sync records exact HDLBits submissions locally and supports GitHub App
-device authorization with session-only credentials. These slices implement
-[ticket #2](https://github.com/KevinA-cpu/progress-sync/issues/2) and
-[ticket #3](https://github.com/KevinA-cpu/progress-sync/issues/3).
-**Repository creation, uploads, and cross-browser recovery are not implemented yet.**
+Progress Sync records exact HDLBits submissions locally, supports GitHub App
+device authorization, and creates or connects a verified public progress repository.
+These slices implement [ticket #2](https://github.com/KevinA-cpu/progress-sync/issues/2),
+[ticket #3](https://github.com/KevinA-cpu/progress-sync/issues/3), and
+[ticket #4](https://github.com/KevinA-cpu/progress-sync/issues/4).
+**Solution uploads and cross-browser progress recovery are not implemented yet.**
 
 HDLBits login is not required. The extension's progress is separate from HDLBits'
 official completion state.
@@ -26,6 +27,7 @@ focused run:
 ```sh
 pnpm test -- capture.spec.ts -g "editing while grading"
 pnpm test -- github.spec.ts
+pnpm test -- destination.spec.ts
 ```
 
 After a build, tests can be rerun without rebuilding:
@@ -33,6 +35,48 @@ After a build, tests can be rerun without rebuilding:
 ```sh
 pnpm exec playwright test capture.spec.ts
 ```
+
+### Test-runner performance
+
+The runner uses two workers, including parallel tests within a file. Every test
+still gets its own extension copy, browser profile, storage, and API fixtures.
+Authentication state is never shared between tests for speed.
+
+Use fewer workers on a constrained machine, or a focused selector while editing:
+
+```sh
+pnpm test -- --workers=1
+pnpm exec playwright test github.spec.ts -g "slowdown"
+```
+
+The second command skips the build; rebuild first if extension code, dependencies,
+or bundled configuration changed. The regular `pnpm test` command always builds.
+
+Polling backoff and cancellation tests use a paused Playwright clock installed
+before their connection page loads. They advance virtual time while exercising
+the real authorization code and record requests against the same virtual clock.
+Assertions still verify the full required backoff intervals and absence of
+requests after cancellation; production timing is unchanged. Browser/worker
+restart tests retain their real lifecycle behavior.
+
+### Runtime constants
+
+Runtime strings are grouped by domain under [lib/constants](lib/constants):
+
+- [Browser constants](lib/constants/browser.ts): trusted storage access, storage
+  areas, extension page paths, transport policy, and browser event identifiers.
+- [GitHub constants](lib/constants/github.ts): permitted URLs, message/state/error
+  codes, authentication messages, and pagination settings.
+- [Progress constants](lib/constants/progress.ts): provider identity, capture
+  states, grading verdicts, persistence keys, and progress messages.
+- [Destination constants](lib/constants/destination.ts): marker identity,
+  operation phases, setup message/error codes, and destination messages.
+
+Zod schemas and runtime switches consume the same literal-valued constant
+objects. Existing wire values, storage keys, and UI messages are unchanged.
+HTML/CSS selectors, syntax delimiters, and schema property names stay with their
+definitions; test fixture values and expectations remain independent of
+production constants so the tests can detect accidental contract changes.
 
 ## Try the extension
 
@@ -44,6 +88,8 @@ pnpm exec playwright test capture.spec.ts
    **Submit** button. Keep the progress tab open to see the observation.
 6. Use **Connect GitHub** to open the dedicated connection tab. GitHub App
    configuration is required only for connecting, not for local HDLBits capture.
+7. After connecting, open **Set up progress repository** and confirm the owner,
+   installation, name, and public visibility before creating a repository.
 
 Chromium 120 or newer is required. The currently tested browser version is
 153.0.8010.12. The production build needs no local server.
@@ -57,7 +103,7 @@ No App is registered and no credentials are obtained automatically.
    [GitHub's registration instructions](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
 2. Enable **device flow** and **expiring user access tokens** in the App settings.
    No backend or client secret is required for the chosen device flow.
-3. For the planned automatic public-repository onboarding, configure repository
+3. For automatic public-repository onboarding, configure repository
    **Administration: read/write**, **Contents: read/write**, and required metadata
    access. Administration is ongoing authority, not a create-only permission.
    When installation access is needed, select only intended repositories;
@@ -91,8 +137,14 @@ guidance without claiming a valid connection.
   messages, logs, or exports.
   Credential-bearing communication is confined to privileged extension contexts.
 - API calls omit website cookies, reject redirects, and are limited to the
-  required GitHub authorization and user endpoints. No client secret, App private
+  required GitHub authorization, user, installation, and repository operations. No client secret, App private
   key, broad OAuth `repo` scope, or general-purpose GitHub proxy is used.
+- REST operations use named, typed Octokit methods from `@octokit/core` and
+  `@octokit/plugin-rest-endpoint-methods`, including repository creation, branch
+  and content reads, installation checks, and authenticated identity. The SDK
+  builds endpoint URLs and encodes parameters; Zod still validates responses.
+  The shared restricted transport and session checks remain in effect. No retry
+  or throttling plugin is installed: uncertain writes must not be replayed.
 - Session expiry is checked before credential use and scheduled with an alarm.
   Browser restart requires reconnection. **Check connection** revalidates the
   identity and clears rejected/revoked credentials; the displayed verification
@@ -102,6 +154,69 @@ guidance without claiming a valid connection.
   authorization or local HDLBits records. Revoke App access separately on GitHub.
 - A connected identity does not establish repository write access. Installation,
   repository, branch, and effective write-permission checks belong to onboarding.
+
+## Public progress repository onboarding
+
+**Create public repository** uses the authenticated personal user's GitHub App
+user token, explicitly sends public visibility, and asks GitHub to initialize
+the repository. This is not an installation token, a private default, or a manual
+repository-creation requirement.
+
+Onboarding verifies the current user, an installation of the configured App
+on that account, installation permissions, selected-repository membership, the
+repository's stable identity/public visibility, user push permission, and its
+actual branch. It follows installation/repository pagination and never silently
+expands installation access. If a newly created repository is not included,
+use **Manage App installation access**, select that repository on GitHub, and
+choose **Verify pending or saved repository**.
+
+Pagination calls the typed list methods with an explicit page number, a 100-page
+bound, response validation, and session checks on every request. It does not
+automatically follow URLs supplied in response headers.
+`GITHUB_PAGINATION.pageSize` is the 100-item GitHub API page size;
+`GITHUB_PAGINATION.maxPages` is our separate 100-page safety cap. Both are named
+in the GitHub constants rather than repeated as unexplained numbers.
+
+The version-1 `.progress-sync.json` marker identifies a compatible repository.
+It contains `kind: "progress-sync"`, `schemaVersion: 1`, and a UUID
+`initializationId`. It contains no credential, source code, or claim that any
+solution passed grading. Creating the marker is the only content write in this
+slice; initialization never supplies an existing file SHA or overwrites a file.
+Solution and acceptance-record publication belong to the next ticket.
+
+**Connect existing repository** is explicit and read-only for compatible
+populated repositories. It discovers the default branch or verifies an entered
+branch, including names containing slashes. An empty existing repository requires
+the initialization checkbox before adding the marker. Unrelated populated
+repositories are rejected; a checkbox alone cannot silently adopt them. Existing
+repository visibility is never changed. This version supports only public
+repositories owned by the authenticated personal account, not organizations.
+
+A trusted local setup journal records the intended account, App/installation,
+name, confirmed repository ID, operation phase, and branch. It is persisted before
+creation or initialization requests. The journal survives worker/browser restart
+but contains no token. Saved destinations require fresh verification; a saved
+record is not an ongoing guarantee of write access.
+
+- A name collision requires explicitly connecting the compatible existing
+  repository or choosing another name.
+- An uncertain creation response is not retried automatically. Inspect GitHub.
+  To adopt the exact previously requested name explicitly, choose **Connect
+  existing repository** and confirm initialization if its marker is still absent.
+  Identity cannot be inferred from the name or lost response alone.
+- An uncertain marker write is reconciled by checking its initialization ID,
+  without issuing another write. A missing or mismatched marker remains blocked.
+  A definite HTTP rejection is recorded separately: repair permissions or branch
+  policy, then explicitly verify again to retry the previously authorized marker
+  write. A read-only existing connection never acquires initialization permission
+  merely because its marker disappears during or after verification.
+- **Discard local setup record** never deletes a GitHub repository, files, local
+  HDLBits attempts, or accepted solutions.
+- Disconnecting or changing sessions invalidates old confirmations. An already
+  issued request may still finish remotely, but its result cannot silently select
+  a destination for a different session.
+- Permissions are a point-in-time check. Branch rules, policy changes, and later
+  revocation can still reject a future write; no future writability is promised.
 
 ## What is recorded
 
@@ -143,7 +258,8 @@ order or infer acceptance from a historical solved badge.
 Permissions:
 
 - `storage`: local attempt records and separate session-only GitHub credentials,
-  restricted to trusted extension contexts.
+  plus a credential-free local repository-setup journal, restricted to trusted
+  extension contexts.
 - `webRequest`: read-only observation of the HDLBits grading request body and
   request lifecycle. No cookie/header inspection, blocking, or traffic changes.
 - `webNavigation`: HDLBits-filtered navigation observations and frame/document
@@ -200,6 +316,12 @@ cancellation races, identity checks, cookie omission, token redaction, worker
 recreation, real browser restart, and denied session access from the actual
 HDLBits content-script world.
 
+Destination tests use controlled repository/installation APIs. They cover
+public creation, collisions, compatible and empty existing repositories,
+nonstandard branches, permission and membership failures, pagination, uncertain
+creation/initialization, worker restart, changed repository identities, and
+session-bound consent. They create no real repository or GitHub content.
+
 Coverage includes accepted bytes, post-submit edits and hashes, failed and stale
 results, ambiguous layouts and payloads, historical/forged observations,
 timeouts, cross-tab overlap, page/worker recreation, correction after failure,
@@ -215,7 +337,7 @@ No credentials, GitHub requests, or public repository writes were involved.
 This establishes that observed path, not every HDLBits problem/layout or a
 comprehensive security certification.
 
-No live GitHub authorization or App registration was performed for this slice.
+No live GitHub authorization, App registration, or repository creation was performed.
 A live compatibility check requires a configured App and separate user consent.
 
 Relevant platform contracts:
@@ -225,3 +347,5 @@ Relevant platform contracts:
 - [Chrome storage access levels](https://developer.chrome.com/docs/extensions/reference/api/storage)
 - [GitHub App user tokens and device flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)
 - [Octokit OAuth methods](https://github.com/octokit/oauth-methods.js)
+- [User-access-token installations and permissions](https://docs.github.com/en/rest/apps/installations#list-app-installations-accessible-to-the-user-access-token)
+- [Create a repository for the authenticated user](https://docs.github.com/en/rest/repos/repos#create-a-repository-for-the-authenticated-user)

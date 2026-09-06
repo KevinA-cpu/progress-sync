@@ -1,7 +1,9 @@
+import { DOM_EVENT } from '../constants/browser';
+import { AUTH_ISSUE, DEVICE_CODE_URL, GITHUB_CLIENT_TYPE, OAUTH_ERROR, TOKEN_URL } from '../constants/github';
 import { createDeviceCode, exchangeDeviceCode } from '@octokit/oauth-methods';
 import {
-  AuthFault, DEVICE_CODE_URL, TOKEN_URL, authenticationSchema, authIssue,
-  grantResponseSchema, oauthErrorCode, verificationSchema, type Credentials,
+  AuthFault, authenticationSchema, authIssue, grantResponseSchema, oauthErrorCode, verificationSchema,
+  type Credentials,
 } from './schemas';
 import { githubRequest } from './transport';
 
@@ -14,18 +16,18 @@ export interface Challenge {
 function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
-      reject(new AuthFault('cancelled'));
+      reject(new AuthFault(AUTH_ISSUE.cancelled));
       return;
     }
     const abort = () => {
       clearTimeout(timer);
-      reject(new AuthFault('cancelled'));
+      reject(new AuthFault(AUTH_ISSUE.cancelled));
     };
     const timer = setTimeout(() => {
-      signal.removeEventListener('abort', abort);
+      signal.removeEventListener(DOM_EVENT.abort, abort);
       resolve();
     }, milliseconds);
-    signal.addEventListener('abort', abort, { once: true });
+    signal.addEventListener(DOM_EVENT.abort, abort, { once: true });
   });
 }
 
@@ -39,12 +41,12 @@ export async function authorizeDevice(
   await permit();
   let verification;
   try {
-    const response = await createDeviceCode({ clientType: 'github-app', clientId, request });
+    const response = await createDeviceCode({ clientType: GITHUB_CLIENT_TYPE, clientId, request });
     const parsed = verificationSchema.safeParse(response.data);
-    if (!parsed.success) throw new AuthFault('provider-error');
+    if (!parsed.success) throw new AuthFault(AUTH_ISSUE.providerError);
     verification = parsed.data;
   } catch (error) {
-    throw new AuthFault(signal.aborted ? 'cancelled' : authIssue(error));
+    throw new AuthFault(signal.aborted ? AUTH_ISSUE.cancelled : authIssue(error));
   }
   const deadline = Date.now() + verification.expires_in * 1000;
   let interval = verification.interval * 1000;
@@ -56,32 +58,34 @@ export async function authorizeDevice(
 
   while (true) {
     await wait(Math.min(interval, Math.max(0, deadline - Date.now())), signal);
-    if (Date.now() >= deadline) throw new AuthFault('flow-expired');
+    if (Date.now() >= deadline) throw new AuthFault(AUTH_ISSUE.flowExpired);
     await permit();
-    if (signal.aborted) throw new AuthFault('cancelled');
-    if (Date.now() >= deadline) throw new AuthFault('flow-expired');
+    if (signal.aborted) throw new AuthFault(AUTH_ISSUE.cancelled);
+    if (Date.now() >= deadline) throw new AuthFault(AUTH_ISSUE.flowExpired);
     try {
       const result = await exchangeDeviceCode({
-        clientType: 'github-app', clientId, code: verification.device_code, request,
+        clientType: GITHUB_CLIENT_TYPE, clientId, code: verification.device_code, request,
       });
-      if (signal.aborted) throw new AuthFault('cancelled');
-      if (Date.now() >= deadline) throw new AuthFault('flow-expired');
-      if (!grantResponseSchema.safeParse(result.data).success) throw new AuthFault('provider-error');
+      if (signal.aborted) throw new AuthFault(AUTH_ISSUE.cancelled);
+      if (Date.now() >= deadline) throw new AuthFault(AUTH_ISSUE.flowExpired);
+      if (!grantResponseSchema.safeParse(result.data).success) throw new AuthFault(AUTH_ISSUE.providerError);
       const parsed = authenticationSchema.safeParse(result.authentication);
-      if (!parsed.success) throw new AuthFault('provider-error');
-      if (!parsed.data.expiresAt) throw new AuthFault('expiring-tokens-required');
-      if (Date.parse(parsed.data.expiresAt) <= Date.now()) throw new AuthFault('expired');
+      if (!parsed.success) throw new AuthFault(AUTH_ISSUE.providerError);
+      if (!parsed.data.expiresAt) throw new AuthFault(AUTH_ISSUE.expiringTokensRequired);
+      if (Date.parse(parsed.data.expiresAt) <= Date.now()) throw new AuthFault(AUTH_ISSUE.expired);
       return { token: parsed.data.token, expiresAt: parsed.data.expiresAt };
     } catch (error) {
-      if (signal.aborted) throw new AuthFault('cancelled');
-      if (Date.now() >= deadline) throw new AuthFault('flow-expired');
-      const code = oauthErrorCode(error);
-      if (code === 'authorization_pending') continue;
-      if (code === 'slow_down') {
-        interval += 5000;
-        continue;
+      if (signal.aborted) throw new AuthFault(AUTH_ISSUE.cancelled);
+      if (Date.now() >= deadline) throw new AuthFault(AUTH_ISSUE.flowExpired);
+      switch (oauthErrorCode(error)) {
+        case OAUTH_ERROR.authorizationPending:
+          continue;
+        case OAUTH_ERROR.slowDown:
+          interval += 5000;
+          continue;
+        default:
+          throw new AuthFault(authIssue(error));
       }
-      throw new AuthFault(authIssue(error));
     }
   }
 }

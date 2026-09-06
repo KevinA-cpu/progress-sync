@@ -1,5 +1,8 @@
 import { expect, stopExtensionWorker, submittedSource, test } from './fixtures';
-import { ACCESS_TOKEN, CLIENT_ID, DEVICE_CODE, REFRESH_TOKEN, credentialSummary, githubFixture, openConnection } from './github-fixture';
+import {
+  ACCESS_TOKEN, CLIENT_ID, DEVICE_CODE, REFRESH_TOKEN, advanceUntilPolls, credentialSummary,
+  githubFixture, openClockedConnection, openConnection,
+} from './github-fixture';
 import { chromium } from '@playwright/test';
 import { resolve } from 'node:path';
 
@@ -78,13 +81,14 @@ for (const scenario of [
 test('a slowdown increases every subsequent polling interval', async ({
   extensionContext, progress,
 }) => {
-  test.setTimeout(60_000);
-  const server = await githubFixture(extensionContext);
+  const connection = await openClockedConnection(extensionContext, progress);
+  const server = await githubFixture(extensionContext, () => connection.evaluate(() => Date.now()));
   server.tokenErrors.push('slow_down', 'authorization_pending');
-  const connection = await openConnection(extensionContext, progress);
   await connection.getByRole('button', { name: 'Connect GitHub', exact: true }).click();
+  await expect(connection.getByText('TEST-CODE', { exact: true })).toBeVisible();
+  await advanceUntilPolls(connection, server, 3);
 
-  await expect(connection.getByRole('status')).toHaveText('Connected as fixture-user', { timeout: 40_000 });
+  await expect(connection.getByRole('status')).toHaveText('Connected as fixture-user');
   expect(server.tokenRequestTimes).toHaveLength(3);
   const [first, second, third] = server.tokenRequestTimes;
   if (first === undefined || second === undefined || third === undefined) throw new Error('Missing poll timestamps.');
@@ -318,6 +322,26 @@ test('network failures are actionable without exposing request details', async (
   expect(server.identityRequests).toBe(0);
 });
 
+test('typed identity requests reject redirects instead of forwarding credentials', async ({
+  extensionContext, progress,
+}) => {
+  await githubFixture(extensionContext);
+  let redirectedRequests = 0;
+  await extensionContext.route('https://unexpected.invalid/**', async route => {
+    redirectedRequests++;
+    await route.fulfill({ json: { id: 42, login: 'fixture-user' } });
+  });
+  await extensionContext.route('https://api.github.com/user', route => route.fulfill({
+    status: 302, headers: { location: 'https://unexpected.invalid/user' },
+  }));
+  const connection = await openConnection(extensionContext, progress);
+  await connection.getByRole('button', { name: 'Connect GitHub', exact: true }).click();
+
+  await expect(connection.getByRole('status')).toHaveText('GitHub identity could not be verified. Connect again.');
+  expect(redirectedRequests).toBe(0);
+  expect((await credentialSummary(connection)).accessInSession).toBe(false);
+});
+
 test('checking a revoked connection clears its credential', async ({
   extensionContext, progress,
 }) => {
@@ -335,12 +359,12 @@ test('checking a revoked connection clears its credential', async ({
 test('cancelling approval polling prevents any later poll', async ({
   extensionContext, progress,
 }) => {
-  const server = await githubFixture(extensionContext);
+  const connection = await openClockedConnection(extensionContext, progress);
+  const server = await githubFixture(extensionContext, () => connection.evaluate(() => Date.now()));
   server.approved = false;
-  const connection = await openConnection(extensionContext, progress);
-  await connection.clock.install();
   await connection.getByRole('button', { name: 'Connect GitHub', exact: true }).click();
-  await expect.poll(() => server.tokenRequestTimes.length).toBeGreaterThan(0);
+  await expect(connection.getByText('TEST-CODE', { exact: true })).toBeVisible();
+  await advanceUntilPolls(connection, server, 1);
   await connection.getByRole('button', { name: 'Cancel authorization' }).click();
   await expect(connection.getByRole('status')).toHaveText('GitHub authorization cancelled.');
   const previousPolls = server.tokenRequestTimes.length;

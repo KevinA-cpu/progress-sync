@@ -1,15 +1,16 @@
+import { DOM_EVENT, LOG_PREFIX, STORAGE_AREA } from '../../lib/constants/browser';
+import { AUTH_ISSUE, AUTH_MESSAGE, AUTH_SESSION_KEY, AUTH_STATUS, AUTH_TEXT } from '../../lib/constants/github';
 import { browser } from 'wxt/browser';
 import { githubCall } from '../../lib/github/client';
 import { authorizeDevice } from '../../lib/github/device-flow';
 import {
-  AUTH_SESSION_KEY, AuthFault, authIssue, issueMessages, pendingSessionSchema,
-  type AuthRequest, type AuthState,
+  AuthFault, authIssue, issueMessages, pendingSessionSchema, type AuthRequest, type AuthState,
 } from '../../lib/github/schemas';
 import '../options/style.css';
 
 function required<T extends HTMLElement>(selector: string): T {
   const element = document.querySelector<T>(selector);
-  if (!element) throw new Error('GitHub connection interface is incomplete.');
+  if (!element) throw new Error(AUTH_TEXT.interfaceIncomplete);
   return element;
 }
 
@@ -27,28 +28,33 @@ let active: { id: string; controller: AbortController } | null = null;
 let refreshVersion = 0;
 
 function render(state: AuthState): void {
-  connect.disabled = state.status === 'unavailable' || state.status === 'connected'
-    || (state.status === 'authorizing' && active?.id === state.attemptId);
+  connect.disabled = state.status === AUTH_STATUS.unavailable || state.status === AUTH_STATUS.connected
+    || (state.status === AUTH_STATUS.authorizing && active?.id === state.attemptId);
   cancel.disabled = !active;
-  disconnect.disabled = state.status !== 'connected' && state.status !== 'authorizing';
-  check.disabled = state.status !== 'connected';
+  disconnect.disabled = state.status !== AUTH_STATUS.connected && state.status !== AUTH_STATUS.authorizing;
+  check.disabled = state.status !== AUTH_STATUS.connected;
   details.textContent = '';
-  if (state.status === 'connected') {
-    status.textContent = `Connected as ${state.user.login}`;
-    details.textContent = `Identity verified at ${state.verifiedAt}. Session expires at ${state.expiresAt}.`;
-  } else if (state.status === 'authorizing') {
-    status.textContent = active?.id === state.attemptId
-      ? 'Waiting for GitHub authorization...' : 'Authorization is in progress in another connection tab.';
-  } else {
-    status.textContent = issueMessages[state.issue];
+  switch (state.status) {
+    case AUTH_STATUS.connected:
+      status.textContent = AUTH_TEXT.connected(state.user.login);
+      details.textContent = AUTH_TEXT.connectionDetails(state.verifiedAt, state.expiresAt);
+      break;
+    case AUTH_STATUS.authorizing:
+      status.textContent = active?.id === state.attemptId
+        ? AUTH_TEXT.waiting : AUTH_TEXT.anotherTab;
+      break;
+    case AUTH_STATUS.disconnected:
+    case AUTH_STATUS.unavailable:
+      status.textContent = issueMessages[state.issue];
+      break;
   }
-  if (state.status !== 'authorizing' || active?.id !== state.attemptId) challenge.hidden = true;
+  if (state.status !== AUTH_STATUS.authorizing || active?.id !== state.attemptId) challenge.hidden = true;
 }
 
 async function refresh(): Promise<void> {
   const version = ++refreshVersion;
   try {
-    const state = await githubCall({ type: 'github:state' });
+    const state = await githubCall({ type: AUTH_MESSAGE.state });
     if (version === refreshVersion) render(state);
   } catch {
     if (version === refreshVersion) {
@@ -60,7 +66,7 @@ async function refresh(): Promise<void> {
 
 async function start(): Promise<void> {
   if (active) {
-    status.textContent = 'An authorization attempt is already running in this tab.';
+    status.textContent = AUTH_TEXT.alreadyRunning;
     return;
   }
   refreshVersion++;
@@ -68,45 +74,45 @@ async function start(): Promise<void> {
   active = current;
   connect.disabled = true;
   cancel.disabled = false;
-  status.textContent = 'Starting GitHub authorization...';
+  status.textContent = AUTH_TEXT.starting;
   challenge.hidden = true;
   try {
-    const state = await githubCall({ type: 'github:begin', attemptId: current.id });
-    if (current.controller.signal.aborted) throw new AuthFault('cancelled');
-    if (state.status !== 'authorizing' || state.attemptId !== current.id) throw new AuthFault('not-allowed');
+    const state = await githubCall({ type: AUTH_MESSAGE.begin, attemptId: current.id });
+    if (current.controller.signal.aborted) throw new AuthFault(AUTH_ISSUE.cancelled);
+    if (state.status !== AUTH_STATUS.authorizing || state.attemptId !== current.id) throw new AuthFault(AUTH_ISSUE.notAllowed);
     const credentials = await authorizeDevice(
       state.clientId,
       current.controller.signal,
       async () => {
-        if (current.controller.signal.aborted) throw new AuthFault('cancelled');
-        await githubCall({ type: 'github:permit', attemptId: current.id });
-        if (current.controller.signal.aborted) throw new AuthFault('cancelled');
+        if (current.controller.signal.aborted) throw new AuthFault(AUTH_ISSUE.cancelled);
+        await githubCall({ type: AUTH_MESSAGE.permit, attemptId: current.id });
+        if (current.controller.signal.aborted) throw new AuthFault(AUTH_ISSUE.cancelled);
       },
       verification => {
         if (active?.id !== current.id || current.controller.signal.aborted) return;
         code.textContent = verification.userCode;
         verificationLink.href = verification.verificationUri;
-        verificationExpiry.textContent = `Verification code expires at ${verification.expiresAt}.`;
+        verificationExpiry.textContent = AUTH_TEXT.verificationExpiry(verification.expiresAt);
         challenge.hidden = false;
-        status.textContent = 'Waiting for GitHub authorization...';
+        status.textContent = AUTH_TEXT.waiting;
       },
     );
-    if (current.controller.signal.aborted) throw new AuthFault('cancelled');
-    status.textContent = 'Verifying GitHub identity...';
+    if (current.controller.signal.aborted) throw new AuthFault(AUTH_ISSUE.cancelled);
+    status.textContent = AUTH_TEXT.verifying;
     challenge.hidden = true;
-    await githubCall({ type: 'github:complete', attemptId: current.id, credentials });
+    await githubCall({ type: AUTH_MESSAGE.complete, attemptId: current.id, credentials });
   } catch (error) {
     const issue = current.controller.signal.aborted
       ? current.controller.signal.reason instanceof AuthFault
-        ? current.controller.signal.reason.issue : 'cancelled'
+        ? current.controller.signal.reason.issue : AUTH_ISSUE.cancelled
       : authIssue(error);
     try {
-      await githubCall({ type: 'github:cancel', attemptId: current.id, issue });
+      await githubCall({ type: AUTH_MESSAGE.cancel, attemptId: current.id, issue });
     } catch (cancelError) {
-      if (cancelError instanceof AuthFault && cancelError.issue === 'not-allowed') {
-        console.info('Progress Sync: obsolete authorization result discarded.');
+      if (cancelError instanceof AuthFault && cancelError.issue === AUTH_ISSUE.notAllowed) {
+        console.info(AUTH_TEXT.obsoleteResult);
       } else {
-        console.error('Progress Sync: authorization cancellation could not be confirmed.');
+        console.error(AUTH_TEXT.cancellationUnconfirmed);
       }
     }
   } finally {
@@ -120,33 +126,33 @@ async function updateConnection(request: AuthRequest): Promise<void> {
     await githubCall(request);
   } catch (error) {
     if (!(error instanceof AuthFault)) throw error;
-    console.warn('Progress Sync:', issueMessages[error.issue]);
+    console.warn(LOG_PREFIX, issueMessages[error.issue]);
   }
   await refresh();
 }
 
-connect.addEventListener('click', () => { void start(); });
-cancel.addEventListener('click', () => {
+connect.addEventListener(DOM_EVENT.click, () => { void start(); });
+cancel.addEventListener(DOM_EVENT.click, () => {
   if (!active) return;
   const current = active;
   current.controller.abort();
-  void updateConnection({ type: 'github:cancel', attemptId: current.id, issue: 'cancelled' });
+  void updateConnection({ type: AUTH_MESSAGE.cancel, attemptId: current.id, issue: AUTH_ISSUE.cancelled });
 });
-disconnect.addEventListener('click', () => {
+disconnect.addEventListener(DOM_EVENT.click, () => {
   active?.controller.abort();
-  void updateConnection({ type: 'github:disconnect' });
+  void updateConnection({ type: AUTH_MESSAGE.disconnect });
 });
-check.addEventListener('click', () => {
+check.addEventListener(DOM_EVENT.click, () => {
   check.disabled = true;
-  void updateConnection({ type: 'github:check' });
+  void updateConnection({ type: AUTH_MESSAGE.check });
 });
 browser.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'session' || !(AUTH_SESSION_KEY in changes)) return;
+  if (area !== STORAGE_AREA.session || !(AUTH_SESSION_KEY in changes)) return;
   if (active) {
     const pending = pendingSessionSchema.safeParse(changes[AUTH_SESSION_KEY]?.newValue);
     if (!pending.success || pending.data.attemptId !== active.id) active.controller.abort();
   }
   void refresh();
 });
-window.addEventListener('pagehide', () => { active?.controller.abort(new AuthFault('interrupted')); });
+window.addEventListener(DOM_EVENT.pageHide, () => { active?.controller.abort(new AuthFault(AUTH_ISSUE.interrupted)); });
 void refresh();
