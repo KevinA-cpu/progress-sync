@@ -258,8 +258,6 @@ test('a legacy retry pinned to the inspected head cannot duplicate a late origin
   originalGate.resolve();
   await expect.poll(() => server.refCompletions).toBe(1);
   retryGate.resolve();
-  await expect(progress.getByText('Publication outcome is uncertain.', { exact: false })).toBeVisible();
-  await progress.getByRole('button', { name: 'Check GitHub and retry delivery', exact: true }).click();
   await expect(progress.getByRole('link', { name: `Commit ${original}`, exact: true })).toBeVisible();
   expect(server.updates).toBe(1);
   expect(server.head).toBe(original);
@@ -417,7 +415,7 @@ test('retry messages cannot supply another source, destination, checkpoint, or n
   expect(server.writes).toHaveLength(writes);
 });
 
-test('a prepared retry never rebases over unrelated newer work', async ({
+test('a prepared retry reapplies its complete record while preserving unrelated newer work', async ({
   extensionContext, progress, problem,
 }) => {
   const { server } = await setup(extensionContext, progress);
@@ -429,10 +427,11 @@ test('a prepared retry never rebases over unrelated newer work', async ({
   server.loseBeforeAt = null;
   const writes = server.writes.length;
   await progress.getByRole('button', { name: 'Check GitHub and retry delivery', exact: true }).click();
-  await expect(progress.getByText('Delivery blocked: The branch changed during publication.', { exact: false })).toBeVisible();
-  expect(server.head).toBe(head);
+  await expect(progress.getByText('Saved to GitHub', { exact: true })).toBeVisible();
+  expect(server.head).not.toBe(head);
   expect(server.files.get('newer.txt')).toBe('Preserve this concurrent edit\n');
-  expect(server.writes).toHaveLength(writes);
+  expect(server.writes).toHaveLength(writes + 3);
+  expect(server.updates).toBe(1);
 });
 
 test('repeated history pages fail visibly instead of looping or assuming a receipt', async ({

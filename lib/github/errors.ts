@@ -7,7 +7,7 @@ export function githubResponseStatus(error: unknown): number | null {
 }
 
 export class GithubWriteRejected extends Error {
-  constructor() {
+  constructor(readonly status: number) {
     super(AUTH_TEXT.writeRejected);
   }
 }
@@ -20,7 +20,7 @@ export async function githubWrite<T>(operation: () => Promise<T>): Promise<T> {
     // Only a response to this mutation can establish rejection. Timeouts remain ambiguous.
     if (status !== null && status >= GITHUB_HTTP_STATUS.clientErrorStart
       && status < GITHUB_HTTP_STATUS.serverErrorStart && status !== GITHUB_HTTP_STATUS.requestTimeout) {
-      throw new GithubWriteRejected();
+      throw new GithubWriteRejected(status);
     }
     throw error;
   }

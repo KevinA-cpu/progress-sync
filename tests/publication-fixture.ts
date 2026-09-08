@@ -29,9 +29,13 @@ const metadataPathSegmentsSchema = z.tuple([
   z.literal('progress'), z.literal('hdlbits'), z.string().regex(/^[a-z0-9][a-z0-9_]{0,127}$/),
   z.uuid(), z.literal('acceptance.json'),
 ]);
+const attemptPathSegmentsSchema = z.tuple([
+  z.literal('progress'), z.literal('hdlbits'), z.string().regex(/^[a-z0-9][a-z0-9_]{0,127}$/), z.uuid(),
+]);
 const historyRequestSchema = z.strictObject({
   sha: shaSchema,
-  path: pathSchema.refine(value => metadataPathSegmentsSchema.safeParse(value.split('/')).success),
+  path: pathSchema.refine(value => metadataPathSegmentsSchema.safeParse(value.split('/')).success
+    || attemptPathSegmentsSchema.safeParse(value.split('/')).success),
   per_page: z.literal('100'),
   page: z.string().regex(/^[1-9][0-9]*$/).transform(Number).pipe(z.int().positive()),
 });
@@ -57,6 +61,7 @@ interface PublicationFixture {
   historyLinkUrl: string | null;
   advanceBeforeUpdate: boolean;
   onFirstWrite: (() => Promise<void>) | null;
+  onRefUpdate: (() => void) | null;
   seedFiles(files: Record<string, string>): void;
   commitFiles(changes: Record<string, string | null>, message?: string): string;
 }
@@ -107,6 +112,7 @@ export async function publicationFixture(
     historyLinkUrl: null,
     advanceBeforeUpdate: false,
     onFirstWrite: null,
+    onRefUpdate: null,
     seedFiles(files) {
       if (historyStarted) throw new Error('Seed remote files before publication starts.');
       const parsed = seedFilesSchema.safeParse(files);
@@ -302,20 +308,22 @@ export async function publicationFixture(
       if (!commits.has(historyQuery.sha)) {
         return route.fulfill({ status: 404, json: { message: 'Not found' } });
       }
-      const metadataPath = historyQuery.path;
+      const historyPath = historyQuery.path;
       const history = commitHistory(historyQuery.sha).filter(({ commit }, index, entries) => {
         const files = trees.get(commit.tree);
         check(files, 'History commit tree is missing');
         const parent = entries[index + 1];
         const parentFiles = parent ? trees.get(parent.commit.tree) : undefined;
         check(!parent || parentFiles, 'History parent tree is missing');
-        return files.get(metadataPath) !== parentFiles?.get(metadataPath);
+        const paths = new Set([...files.keys(), ...(parentFiles?.keys() ?? [])]);
+        return [...paths].some(path => (path === historyPath || path.startsWith(`${historyPath}/`))
+          && files.get(path) !== parentFiles?.get(path));
       });
       const pageSize = historyPageSizeSchema.safeParse(server.historyPageSize ?? 100);
       check(pageSize.success, 'Invalid history page size');
       const offset = (historyQuery.page - 1) * pageSize.data;
       const nextQuery = new URLSearchParams({
-        sha: historyQuery.sha, path: metadataPath, per_page: '100', page: String(historyQuery.page + 1),
+        sha: historyQuery.sha, path: historyPath, per_page: '100', page: String(historyQuery.page + 1),
       });
       const nextUrl = server.historyLinkUrl ?? `${api}/commits?${nextQuery}`;
       return route.fulfill({
@@ -415,6 +423,7 @@ export async function publicationFixture(
       case 'ref': {
         const parsed = refRequestSchema.safeParse(body);
         if (!parsed.success) return invalid('Expected a commit SHA and force: false.');
+        server.onRefUpdate?.();
         if (server.failAt === stage) return fail();
         if (server.loseBeforeAt === stage) return route.abort('failed');
         if (server.advanceBeforeUpdate) {

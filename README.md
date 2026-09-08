@@ -9,9 +9,10 @@ These slices implement [ticket #2](https://github.com/KevinA-cpu/progress-sync/i
 [ticket #4](https://github.com/KevinA-cpu/progress-sync/issues/4),
 [ticket #5](https://github.com/KevinA-cpu/progress-sync/issues/5),
 [ticket #6](https://github.com/KevinA-cpu/progress-sync/issues/6),
-[ticket #7](https://github.com/KevinA-cpu/progress-sync/issues/7), and
+[ticket #7](https://github.com/KevinA-cpu/progress-sync/issues/7),
+[ticket #10](https://github.com/KevinA-cpu/progress-sync/issues/10), and
 [ticket #11](https://github.com/KevinA-cpu/progress-sync/issues/11).
-**Automatic queue draining and conflict rebasing are not implemented yet.**
+**Automatic queue draining is not implemented yet.**
 
 HDLBits login is not required. The extension's progress is separate from HDLBits'
 official completion state.
@@ -37,6 +38,7 @@ pnpm test -- destination.spec.ts
 pnpm test -- publication.spec.ts
 pnpm test -- recovery.spec.ts
 pnpm test -- reconciliation.spec.ts
+pnpm test -- remote-conflicts.spec.ts
 pnpm test -- concurrency.spec.ts
 ```
 
@@ -282,8 +284,9 @@ secrets or material you cannot publish.
 
 Named Octokit Git Data methods create a tree based on the current branch's tree,
 add both files to a single-parent commit, and update the selected branch with
-`force: false`. A changed head or an existing attempt path blocks publication;
-matching source bytes alone are not a delivery receipt. Truncated tree responses
+`force: false`. A changed head triggers bounded reconciliation and safe reapplication;
+an inconsistent existing attempt path blocks publication. Matching source bytes
+alone are not a delivery receipt. Truncated tree responses
 are rejected rather than assuming missing entries are absent. Before committing,
 the proposed tree is read back and checked for both exact Git blob IDs and
 preserved unrelated entries/file modes. Git blob IDs use Git's SHA-1 object
@@ -298,7 +301,7 @@ automatically retried or called successful, even if GitHub may have applied the
 update. Worker/browser restart does not erase these jobs. Creating Git objects
 can leave unreferenced objects if a later step fails; only the final branch update
 makes the complete commit visible on the selected branch. Automatic retry
-scheduling and conflict rebasing are later tickets.
+scheduling remains a later ticket.
 
 ### Check GitHub and retry delivery
 
@@ -312,9 +315,10 @@ ordering changes are allowed, but unknown or changed fields are not.
 New jobs record a prepared commit checkpoint before requesting a branch update.
 If that complete commit is already on the intended branch, reconciliation
 recovers its receipt without another publication. If a reference request did not
-complete, retry reuses the exact prepared commit instead of creating a second
-visible commit. A late original response and a repeated reference update therefore
-converge on the same commit.
+complete and the base is unchanged, retry reuses the exact prepared commit instead
+of creating a second visible commit. If the branch has advanced, it first checks
+for a complete publication, then safely reapplies the record as described below.
+A late original request cannot fast-forward its obsolete commit over newer work.
 
 Retries retain the original snapshot, account, App installation, repository, and
 branch. A newly verified session for that same destination can retry explicitly;
@@ -322,17 +326,51 @@ a different destination cannot redirect the job. Repeated retry requests are
 serialized and re-read the durable job before acting.
 
 Incomplete or inconsistent remote records stay blocked without overwriting them.
-A changed branch that cannot accept the prepared commit non-destructively is
-also blocked; retry does not force-push or silently rebase. Read failures remain
-visible and retained, with no automatic retry loop.
+A branch change that cannot be safely reconciled is also blocked; retry never
+force-pushes. Read failures remain visible and retained, with no automatic retry loop.
 
 For older jobs without a prepared-commit checkpoint, a bounded metadata-path
 history search can recover the original atomic introduction. If both the current
 record and its history are absent, retry prepares the complete record from that
-same inspected head, never a silently refreshed or rebased head. Competing late
-reference requests cannot both fast-forward different publication commits.
+inspected head. Any subsequent advancement is re-inspected before reapplication;
+competing late reference requests cannot both introduce the same record.
 Removed or inconsistent historical records stay blocked. History requests retain
 fixed repository/path/branch parameters rather than following response-provided URLs.
+
+### Preserve concurrent remote changes
+
+Initial publication and explicit retries use the same conflict coordinator. A head
+change discovered before the reference update, or a reference-specific HTTP
+409/422 rejection followed by a verified head advance, causes a fresh destination
+verification and inspection of the current commit/tree. Other write rejections,
+or a 409/422 with an unchanged head, do not trigger conflict retries. Lost responses
+remain uncertain and require reconciliation rather than speculative replay.
+
+Before rebuilding, the coordinator verifies the prepared commit and requires the
+new head to descend from its original base. A complete existing publication
+recovers its original receipt instead of creating a duplicate. An inconsistent
+current attempt path, a detectable replacement of branch history, or evidence of
+a removed attempt blocks reapplication. Absence checks inspect the whole attempt
+directory's history, including source-only or other partial records. Removed
+records are not recreated just to finish the queue item.
+
+Safe reapplication adds the exact solution/metadata pair to a tree based on the
+new head, checks that all unrelated entries and file modes are preserved, and
+persists a new prepared-commit checkpoint before a non-force reference update.
+The original account, installation, repository identity, and branch remain fixed;
+every conflict inspection rechecks access and repository compatibility.
+
+History is **additive by attempt UUID**, including multiple attempts for the same
+problem. Older queued work adds its own record and never replaces a newer remote
+attempt, edits that attempt's timestamps, or updates a shared "latest" pointer.
+Existing unrelated and user-edited records remain untouched.
+
+Each invocation permits at most **two rebases** after its initial/prepared
+candidate. If the branch keeps advancing, the job retains its snapshot and
+checkpoint with a visible blocked status and **Check GitHub and retry delivery**
+action. This bounds conflict recovery; it is not automatic retry scheduling.
+Protection, permission, validation, and rate-limit failures never cause an
+unbounded retry loop.
 
 ## Recover saved progress
 
@@ -514,6 +552,9 @@ session-bound consent. They create no real repository or GitHub content.
 Publication tests extend that boundary with immutable Git trees/commits and a
 non-force branch update. They run real onboarding, capture, and publication and
 check exact remote files together with the visible receipt or failure state.
+Conflict tests advance the remote branch before and during reference updates,
+preserve same/different-problem history, reject edited or removed attempt records,
+bound repeated conflicts, and reconcile lost responses and worker interruptions.
 
 Recovery tests close the original browser and launch a fresh profile without
 copying local storage or credentials. They reconnect through the real extension
