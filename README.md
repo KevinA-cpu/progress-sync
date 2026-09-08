@@ -8,8 +8,9 @@ These slices implement [ticket #2](https://github.com/KevinA-cpu/progress-sync/i
 [ticket #3](https://github.com/KevinA-cpu/progress-sync/issues/3),
 [ticket #4](https://github.com/KevinA-cpu/progress-sync/issues/4),
 [ticket #5](https://github.com/KevinA-cpu/progress-sync/issues/5),
-[ticket #6](https://github.com/KevinA-cpu/progress-sync/issues/6), and
-[ticket #7](https://github.com/KevinA-cpu/progress-sync/issues/7).
+[ticket #6](https://github.com/KevinA-cpu/progress-sync/issues/6),
+[ticket #7](https://github.com/KevinA-cpu/progress-sync/issues/7), and
+[ticket #11](https://github.com/KevinA-cpu/progress-sync/issues/11).
 **Automatic queue draining and conflict rebasing are not implemented yet.**
 
 HDLBits login is not required. The extension's progress is separate from HDLBits'
@@ -36,6 +37,7 @@ pnpm test -- destination.spec.ts
 pnpm test -- publication.spec.ts
 pnpm test -- recovery.spec.ts
 pnpm test -- reconciliation.spec.ts
+pnpm test -- concurrency.spec.ts
 ```
 
 After a build, tests can be rerun without rebuilding:
@@ -426,6 +428,18 @@ observation from that same document. It also checks the originating problem
 document. It does not assume request and navigation events arrive in the same
 order or infer acceptance from a historical solved badge.
 
+Concurrent submissions in separate tabs are tracked independently by browser
+request ID, tab, result frame, and parent/result document identity. They may target
+the same or different problems and finish out of order. Each accepted snapshot
+enters the existing serialized, idempotent delivery coordinator with its own
+attempt ID, source hash, metadata, and receipt. A failed reattempt does not change
+an earlier accepted or saved attempt.
+
+A repeated observation from an already resolved result document is rejected
+without attaching it to a newer pending submission in that frame. Malformed or
+inactive-document messages cannot authorize publication. Ambiguity in one tab
+does not invalidate an independent tab's observation.
+
 Permissions:
 
 - `storage`: local attempt records and separate session-only GitHub credentials,
@@ -456,8 +470,11 @@ grading certificate: a compromised provider or browser is outside this proof.
   must not be treated as accepted.
 - Submitted source is limited to 256 KiB. Duplicate or unsupported source fields
   are unverified, not silently truncated.
-- Only one simulation may be awaiting observation across the extension at a
-  time. Overlapping simulations are held as unverified.
+- Overlapping submissions to the **same result frame** remain unsupported and
+  unverified. Navigation commits do not provide the grading request ID, and the
+  result does not echo a submission-specific source identifier; replacing an
+  in-flight result cannot safely be treated as a new accepted attempt. Reload
+  that problem and resubmit, or use separate tabs for concurrent work.
 - Ambiguous or interrupted problem documents require a reload before another
   attempt can be trusted. This safety gate survives worker recreation.
   A page already open when the observer starts, or one with an untracked grading
@@ -504,7 +521,8 @@ and controlled GitHub boundary, retaining only the remote repository state.
 
 Coverage includes accepted bytes, post-submit edits and hashes, failed and stale
 results, ambiguous layouts and payloads, historical/forged observations,
-timeouts, cross-tab overlap, page/worker recreation, correction after failure,
+timeouts, independent cross-tab publication with out-of-order results, same-frame
+ambiguity, stale document messages during a reattempt, page/worker recreation, correction after failure,
 strict saved-data validation, runtime sender/operation checks, and CSP-safe
 schema initialization.
 
@@ -516,6 +534,19 @@ submitted CRLF/UTF-8 bytes matched SHA-256
 No credentials, GitHub requests, or public repository writes were involved.
 This establishes that observed path, not every HDLBits problem/layout or a
 comprehensive security certification.
+
+A live guest concurrency check on 2026-09-08 used a fresh Chromium 153.0.8010.12
+profile and two `step_one` tabs with distinct, original constant-output solutions.
+Both POSTs genuinely overlapped (about 10 seconds), returned fresh HTTP 200
+results, and produced separate accepted snapshots with distinct tab, request,
+parent-document, and result-document identities. Editing the first buffer after
+submission did not change its captured bytes. Each submission was 102 UTF-8
+bytes after form normalization, with SHA-256 hashes
+`a7556de835994888e5c9abddc77e18206729161200ef6025220e7366f9515467` and
+`0615819fff5faf86def377d7e9ad3519760abd55f035277c5ba926b44f268bb8`.
+No credentials or GitHub requests were used. This verifies the distinct-tab
+path, not same-frame overlap, other submission modes, or live GitHub delivery.
+Same-frame overlap remains an explicit release limitation.
 
 No live GitHub authorization, App registration, or repository creation was performed.
 A live compatibility check requires a configured App and separate user consent.

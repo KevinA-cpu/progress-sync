@@ -34,8 +34,11 @@ export async function installProviderRoutes(context: BrowserContext): Promise<vo
       await route.continue();
     } else if (url.origin !== 'https://hdlbits.01xz.net') {
       await route.abort();
-    } else if (url.pathname === '/wiki/Step_one') {
-      await route.fulfill({ contentType: 'text/html', body: problemPage });
+    } else if (url.pathname === '/wiki/Step_one' || url.pathname === '/wiki/Zero') {
+      await route.fulfill({
+        contentType: 'text/html',
+        body: url.pathname === '/wiki/Zero' ? problemPage.replaceAll('step_one', 'zero') : problemPage,
+      });
     } else if (url.pathname === '/runsim.php') {
       await route.fulfill({ contentType: 'text/html', body: successPage });
     } else {

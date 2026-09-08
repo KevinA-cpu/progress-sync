@@ -1,4 +1,5 @@
 import { expect, stopExtensionWorker, submittedSource, test } from './fixtures';
+import { trackContentScript } from './content-script-fixture';
 import {
   ACCESS_TOKEN, CLIENT_ID, DEVICE_CODE, REFRESH_TOKEN, advanceUntilPolls, credentialSummary,
   githubFixture, openClockedConnection, openConnection,
@@ -224,34 +225,12 @@ test('the real HDLBits content-script context cannot read session credentials or
   await expect(connection.getByRole('status')).toHaveText('Connected as fixture-user');
   expect((await credentialSummary(connection)).accessInSession).toBe(true);
 
-  const worker = extensionContext.serviceWorkers()[0];
-  if (!worker) throw new Error('Missing extension worker.');
-  const extensionId = new URL(worker.url()).hostname;
-  const session = await extensionContext.newCDPSession(problem);
-  const contexts = new Set<number>();
-  session.on('Runtime.executionContextCreated', ({ context }) => contexts.add(context.id));
-  session.on('Runtime.executionContextDestroyed', ({ executionContextId }) => contexts.delete(executionContextId));
-  session.on('Runtime.executionContextsCleared', () => contexts.clear());
-  await session.send('Runtime.enable');
+  const observer = await trackContentScript(extensionContext, problem);
   await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(progress.getByText('Accepted locally - not saved to GitHub', { exact: true })).toBeVisible();
 
-  let isolatedWorld: number | undefined;
-  for (const contextId of contexts) {
-    const result = await session.send('Runtime.evaluate', {
-      contextId,
-      expression: `globalThis.chrome?.runtime?.id === ${JSON.stringify(extensionId)}`,
-      returnByValue: true,
-    });
-    if (result.result.value === true) isolatedWorld = contextId;
-  }
-  if (isolatedWorld === undefined) throw new Error('Did not find the actual extension content-script context.');
-  const result = await session.send('Runtime.evaluate', {
-    contextId: isolatedWorld,
-    awaitPromise: true,
-    returnByValue: true,
-    expression: `(async () => {
+  const result = await observer.evaluate(`(async () => {
       const reply = await chrome.runtime.sendMessage({ type: 'github:state' });
       let storageBlocked = !chrome.storage?.session;
       if (!storageBlocked) {
@@ -276,14 +255,12 @@ test('the real HDLBits content-script context cannot read session credentials or
         recoveryDenied: recovery.ok === false && recovery.error === 'Unsupported recovery operation or sender.',
         refreshDenied: refresh.ok === false && refresh.error === 'Unsupported recovery operation or sender.'
       };
-    })()`,
-  });
-  expect(result.exceptionDetails).toBeUndefined();
-  expect(result.result.value).toEqual({
+    })()`);
+  expect(result).toEqual({
     storageBlocked: true, stateDenied: true, deliveryDenied: true, publicationDenied: true,
     recoveryDenied: true, refreshDenied: true,
   });
-  await session.detach();
+  await observer.close();
 });
 
 test('authorization continues in its tab after the service worker is recreated', async ({

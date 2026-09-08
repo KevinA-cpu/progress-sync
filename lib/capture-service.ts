@@ -107,12 +107,12 @@ export function createCaptureService(onAccepted: (attemptId: string) => Promise<
       || result.observation.problemId !== attempt.problemId) {
       unverify(operation, PROGRESS_TEXT.unmatchedResult);
     } else {
+      attempt.provenance.resultDocumentId = documentId;
       switch (result.observation.verdict) {
         case GRADING_VERDICT.success:
           attempt.state = CAPTURE_STATE.accepted;
           attempt.reason = PROGRESS_TEXT.accepted;
           attempt.observedAt = new Date().toISOString();
-          attempt.provenance.resultDocumentId = documentId;
           break;
         case GRADING_VERDICT.failure:
           unverify(operation, PROGRESS_TEXT.failed, false);
@@ -166,7 +166,11 @@ export function createCaptureService(onAccepted: (attemptId: string) => Promise<
         },
       };
       const operation: Operation = { attempt, completed: false, documentId: null, result: null };
-      const overlapping = [...operations.values()].filter(item => item.attempt.state === CAPTURE_STATE.pending);
+      // Navigation commits have no request ID: only a shared result frame is ambiguous.
+      const overlapping = [...operations.values()].filter(item =>
+        item.attempt.state === CAPTURE_STATE.pending
+        && item.attempt.provenance.tabId === details.tabId
+        && item.attempt.provenance.frameId === details.frameId);
       attempts.push(attempt);
       operations.set(details.requestId, operation);
       if (!source || !problemId || !parentDocumentId || details.type !== RESOURCE_TYPE.subFrame
@@ -260,15 +264,23 @@ export function createCaptureService(onAccepted: (attemptId: string) => Promise<
       await expire();
       if (sender.id === browser.runtime.id
         && sender.url === browser.runtime.getURL(EXTENSION_PAGE.options)
+        && sender.frameId === 0 && sender.documentId && sender.tab?.id !== undefined
         && progressRequestSchema.safeParse(value).success) {
         return { ok: true, attempts };
       }
       const parsed = resultObservationSchema.safeParse(value);
       if (sender.id !== browser.runtime.id || sender.url !== GRADING_URL
         || !sender.documentId || sender.tab?.id === undefined || !sender.frameId
+        || sender.documentLifecycle !== DOCUMENT_LIFECYCLE.active
         || !parsed.success) {
         console.warn(PROGRESS_TEXT.rejectedMessage);
         return { ok: false, error: PROGRESS_TEXT.unsupportedMessage };
+      }
+      // A finished document can report again while its frame awaits a newer result.
+      if (attempts.some(attempt => attempt.provenance.tabId === sender.tab?.id
+        && attempt.provenance.frameId === sender.frameId
+        && attempt.provenance.resultDocumentId === sender.documentId)) {
+        return { ok: false, error: PROGRESS_TEXT.unobservedSubmission };
       }
       const operation = [...operations.values()].find(item =>
         item.attempt.state === CAPTURE_STATE.pending
