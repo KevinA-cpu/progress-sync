@@ -178,15 +178,17 @@ test('duplicate source fields remain unverified even if the result says success'
     .toHaveCount(0);
 });
 
-test('overlapping simulations in different tabs are both held as unverified', async ({
+test('overlapping simulations in different tabs keep their snapshots with out-of-order results', async ({
   extensionContext, problem, progress,
 }) => {
   const firstRequest = Promise.withResolvers<void>();
-  const grading = Promise.withResolvers<void>();
+  const firstResult = Promise.withResolvers<void>();
   let requests = 0;
   await extensionContext.route('**/runsim.php', async route => {
-    if (requests++ === 0) firstRequest.resolve();
-    await grading.promise;
+    if (requests++ === 0) {
+      firstRequest.resolve();
+      await firstResult.promise;
+    }
     await route.fulfill({ contentType: 'text/html', body: successPage });
   });
   const secondProblem = await extensionContext.newPage();
@@ -194,11 +196,13 @@ test('overlapping simulations in different tabs are both held as unverified', as
   await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
   await firstRequest.promise;
-  await secondProblem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
+  const secondSource = `// Second tab\n${submittedSource}`;
+  await secondProblem.getByRole('textbox', { name: 'Solution' }).fill(secondSource);
   await secondProblem.getByRole('button', { name: 'Submit', exact: true }).click();
-  await expect(progress.getByText('Overlapping simulations are not supported yet.', { exact: false }))
-    .toHaveCount(2);
-  grading.resolve();
+  await expect(progress.getByText('Accepted locally - not saved to GitHub', { exact: true })).toHaveCount(1);
+  await expect(progress.getByText('Waiting for the result - not saved to GitHub', { exact: true })).toHaveCount(1);
+  await problem.getByRole('textbox', { name: 'Solution' }).fill('edited first tab');
+  firstResult.resolve();
   for (const page of [problem, secondProblem]) {
     await expect(page.frameLocator('#compile_iframe').getByRole('heading', {
       name: 'Status: Success!', exact: true,
@@ -208,7 +212,9 @@ test('overlapping simulations in different tabs are both held as unverified', as
 
   await expect(progress.getByRole('status')).toHaveText('2 captured attempts.');
   await expect(progress.getByText('Accepted locally - not saved to GitHub', { exact: true }))
-    .toHaveCount(0);
+    .toHaveCount(2);
+  await expect(progress.getByRole('textbox', { name: 'Submitted source' }).nth(0)).toHaveValue(secondSource);
+  await expect(progress.getByRole('textbox', { name: 'Submitted source' }).nth(1)).toHaveValue(submittedSource);
 });
 
 test('worker recreation does not clear an interrupted problem document safety gate', async ({

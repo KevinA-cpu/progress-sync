@@ -30,7 +30,7 @@ export const PROGRESS_TEXT = {
   unverifiedOrigin: 'The originating problem document could not be verified.',
   quarantined: 'This page has an ambiguous observation. Reload the problem and resubmit.',
   predatesObserver: 'The problem document predates this observer. Reload the problem and resubmit.',
-  overlapping: 'Overlapping simulations are not supported yet. Reload the problems and resubmit separately.',
+  overlapping: 'Overlapping submissions to the same result frame are ambiguous. Reload the problem and resubmit separately.',
   problemNavigated: 'The problem navigated before its result was observed.',
   unexpectedNavigation: 'An unexpected result navigation made this attempt unverified.',
   unsuccessfulResponse: 'The grading request did not return a fresh successful response.',
