@@ -279,7 +279,7 @@ async function deliverAttempt(
       candidate = prepared;
     },
   };
-  for (;;) {
+  while (true) {
     const branch = await graph.destination.verify(job.target);
     const head = await graph.commit(branch.commit.sha);
     const tree = await graph.tree(head.tree.sha);
