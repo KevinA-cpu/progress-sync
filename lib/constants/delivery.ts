@@ -1,8 +1,11 @@
 import { GITHUB_ORIGIN } from './github';
 
 export const DELIVERY_KEY = 'delivery-jobs-v1';
+export const DISCARDED_DELIVERY_KEY = 'discarded-deliveries-v1';
 export const DELIVERY_MESSAGE_PREFIX = 'delivery:';
-export const DELIVERY_MESSAGE = { list: 'delivery:list', publish: 'delivery:publish', retry: 'delivery:retry' } as const;
+export const DELIVERY_MESSAGE = {
+  list: 'delivery:list', publish: 'delivery:publish', retry: 'delivery:retry', discard: 'delivery:discard',
+} as const;
 export const DELIVERY_STATE = {
   pending: 'pending', publishing: 'publishing', reconciling: 'reconciling', blocked: 'blocked', uncertain: 'uncertain', saved: 'saved',
 } as const;
@@ -26,6 +29,9 @@ export const DELIVERY_TEXT = {
   invalidInput: 'Unsupported delivery operation or sender.',
   invalidData: 'Saved delivery data is invalid. It has not been overwritten.',
   invalidAttempt: 'Only a complete, validated accepted snapshot can be published.',
+  discarded: 'This local attempt was discarded and cannot be delivered again.',
+  discardActive: 'Delivery is still active. Wait for it to settle, or disconnect GitHub before discarding local work. Already-issued requests may complete.',
+  discardSaved: 'Only pending or unresolved local delivery work can be discarded here.',
   noDestination: 'Select and verify a public progress repository before publishing this attempt.',
   sessionChanged: 'The account or selected destination changed. This job has not been redirected.',
   invalidResponse: 'GitHub returned an unsupported publication response.',

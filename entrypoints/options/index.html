@@ -13,6 +13,15 @@
       <p>Acceptance and GitHub backup are separate. A saved receipt confirms a complete remote commit.</p>
       <p><a href="/connect.html" target="_blank" rel="noopener">Connect GitHub</a></p>
       <p><a href="/destination.html" target="_blank" rel="noopener">Set up progress repository</a></p>
+      <h2>Local queue and history</h2>
+      <p>Disconnecting GitHub or restarting the browser retains captured source, pending delivery jobs, and saved history.
+        Retained jobs stay bound to their original GitHub account, App, installation, repository, and branch.
+        Reconnecting or changing the selected destination does not resume or redirect these jobs automatically.</p>
+      <p>Reconnect with the original account and App, then select and verify the original destination before choosing
+        “Check GitHub and retry delivery”. Requests already issued may complete even after disconnect.</p>
+      <p>“Discard local attempt” removes an unsaved attempt's captured source and delivery job only from this browser.
+        This cannot be undone and does not delete anything on GitHub or prove that publication never happened.
+        Saved receipts are not discardable here.</p>
       <button id="refresh" type="button">Refresh progress</button>
       <p id="status" role="status">Loading local progress...</p>
       <section id="attempts" aria-label="Captured attempts"></section>

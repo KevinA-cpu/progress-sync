@@ -10,9 +10,10 @@
     <main>
       <h1>Connect GitHub</h1>
       <p>GitHub handles login and consent. Never enter a password or token into this extension.</p>
-      <p>The planned public-repository onboarding requires Administration: write and Contents: write.
+      <p>Public-repository onboarding requires Administration: write and Contents: write.
         Limit the App installation to intended repositories; these are not broad OAuth scopes.</p>
-      <p><a href="/destination.html" target="_blank" rel="noopener">Set up progress repository</a>. Solution uploads are not implemented yet.</p>
+      <p><a href="/destination.html" target="_blank" rel="noopener">Set up progress repository</a></p>
+      <p><a href="/options.html" target="_blank" rel="noopener">Review local queue and history</a></p>
       <p id="status" role="status">Loading GitHub connection...</p>
       <p id="details"></p>
       <button id="connect" type="button" disabled>Connect GitHub</button>
@@ -27,8 +28,21 @@
       </section>
       <p>Only the expiring access token is retained in trusted browser-session storage.
         Refresh tokens are discarded. Reconnect after browser restart or token expiry.</p>
-      <p>Disconnect clears local credentials, not GitHub-side authorization or local HDLBits records.
-        Manage or revoke App access in GitHub settings.</p>
+      <h2>Disconnecting and retained work</h2>
+      <p>Disconnect clears local credentials. Disconnecting or restarting the browser retains captured source,
+        pending delivery jobs, and saved history. Each delivery job stays bound to its original GitHub account,
+        App, installation, repository, and branch; a different account or destination cannot take it over.</p>
+      <p>Reconnect with the original account and App, then select and verify the original destination before explicitly
+        checking GitHub and retrying a retained job. Reconnecting does not resume these jobs automatically.</p>
+      <p>Requests already issued may still complete after disconnect. Disconnecting or discarding local work does not
+        delete repositories, files, or commits on GitHub, and does not prove that publication never happened.</p>
+      <p>Disconnect does not revoke GitHub-side App authorization or uninstall the App. To change GitHub-side access:</p>
+      <ul>
+        <li><a href="https://github.com/settings/apps/authorizations" target="_blank" rel="noopener noreferrer">
+          Authorized GitHub Apps — revoke authorization</a></li>
+        <li><a href="https://github.com/settings/installations" target="_blank" rel="noopener noreferrer">
+          Installed GitHub Apps — manage installation</a></li>
+      </ul>
     </main>
   </body>
 </html>

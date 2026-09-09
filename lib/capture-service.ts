@@ -20,11 +20,17 @@ interface Operation {
   result: { documentId: string; observation: ResultObservation } | null;
 }
 
+function resultKey(tabId: number | undefined, frameId: number, documentId: string): string {
+  return `${tabId}\0${frameId}\0${documentId}`;
+}
+
 export function createCaptureService(onAccepted: (attemptId: string) => Promise<string | null>) {
   let attempts: Attempt[] = [];
   const operations = new Map<string, Operation>();
   const quarantinedParents = new Set<string>();
   const observedParents = new Set<string>();
+  // Discarding an attempt must not forget which result documents already resolved.
+  const resolvedResults = new Set<string>();
   let failure: string | null = null;
 
   function reportFailure(error: unknown): void {
@@ -47,6 +53,11 @@ export function createCaptureService(onAccepted: (attemptId: string) => Promise<
         }
         if (attempt.requiresReload && attempt.provenance.parentDocumentId) {
           quarantinedParents.add(attempt.provenance.parentDocumentId);
+        }
+        if (attempt.provenance.resultDocumentId) {
+          resolvedResults.add(resultKey(
+            attempt.provenance.tabId, attempt.provenance.frameId, attempt.provenance.resultDocumentId,
+          ));
         }
       }
       if (changed) await save();
@@ -108,6 +119,7 @@ export function createCaptureService(onAccepted: (attemptId: string) => Promise<
       unverify(operation, PROGRESS_TEXT.unmatchedResult);
     } else {
       attempt.provenance.resultDocumentId = documentId;
+      resolvedResults.add(resultKey(attempt.provenance.tabId, attempt.provenance.frameId, documentId));
       switch (result.observation.verdict) {
         case GRADING_VERDICT.success:
           attempt.state = CAPTURE_STATE.accepted;
@@ -277,9 +289,7 @@ export function createCaptureService(onAccepted: (attemptId: string) => Promise<
         return { ok: false, error: PROGRESS_TEXT.unsupportedMessage };
       }
       // A finished document can report again while its frame awaits a newer result.
-      if (attempts.some(attempt => attempt.provenance.tabId === sender.tab?.id
-        && attempt.provenance.frameId === sender.frameId
-        && attempt.provenance.resultDocumentId === sender.documentId)) {
+      if (resolvedResults.has(resultKey(sender.tab?.id, sender.frameId, sender.documentId))) {
         return { ok: false, error: PROGRESS_TEXT.unobservedSubmission };
       }
       const operation = [...operations.values()].find(item =>
@@ -300,5 +310,17 @@ export function createCaptureService(onAccepted: (attemptId: string) => Promise<
     });
   }
 
-  return { request, committed, completed, interrupted, message, reportFailure };
+  function discardAccepted(id: string, persist: (remaining: Attempt[]) => Promise<void>): Promise<void> {
+    const result = queue.then(async () => {
+      if (failure) throw new Error(failure);
+      const remaining = attempts.filter(attempt => attempt.id !== id);
+      await persist(remaining);
+      attempts = remaining;
+    });
+    // A rejected discard must not disable later capture.
+    queue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  return { request, committed, completed, interrupted, message, reportFailure, discardAccepted };
 }

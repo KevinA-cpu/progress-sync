@@ -51,8 +51,14 @@ export const retryRequestSchema = z.strictObject({
   type: z.literal(DELIVERY_MESSAGE.retry), jobId: z.uuid(), expectedConnectionId: z.uuid(), expectedSelectionId: z.uuid(),
 });
 export type RetryRequest = z.infer<typeof retryRequestSchema>;
+export const discardedDeliveryIdsSchema = z.array(z.uuid())
+  .refine(ids => new Set(ids).size === ids.length);
+export const discardRequestSchema = z.strictObject({
+  type: z.literal(DELIVERY_MESSAGE.discard), jobId: z.uuid(), localConfirmed: z.literal(true),
+});
+export type DiscardRequest = z.infer<typeof discardRequestSchema>;
 export const deliveryRequestSchema = z.discriminatedUnion('type', [
-  z.strictObject({ type: z.literal(DELIVERY_MESSAGE.list) }), publishRequestSchema, retryRequestSchema,
+  z.strictObject({ type: z.literal(DELIVERY_MESSAGE.list) }), publishRequestSchema, retryRequestSchema, discardRequestSchema,
 ]);
 export const deliveryReplySchema = z.discriminatedUnion('ok', [
   z.strictObject({ ok: z.literal(true), jobs: deliveryJobsSchema, selection: destinationTargetSchema.nullable() }),

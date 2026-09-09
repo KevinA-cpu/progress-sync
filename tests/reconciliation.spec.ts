@@ -355,7 +355,14 @@ test('retry cannot redirect a retained job to a different selected branch', asyn
   await page.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('@ different-branch');
   const writes = server.writes.length;
-  await progress.getByRole('button', { name: 'Check GitHub and retry delivery', exact: true }).click();
+  await expect(progress.getByRole('button', { name: 'Check GitHub and retry delivery', exact: true })).toBeDisabled();
+  await progress.evaluate(async () => {
+    const view = await chrome.runtime.sendMessage({ type: 'delivery:list' });
+    await chrome.runtime.sendMessage({
+      type: 'delivery:retry', jobId: view.jobs[0].id, expectedConnectionId: view.selection.connectionId,
+      expectedSelectionId: view.selection.operationId,
+    });
+  });
   await expect(progress.getByText('Delivery blocked: The account or selected destination changed.', { exact: false })).toBeVisible();
   const view = await progress.evaluate(() => chrome.runtime.sendMessage({ type: 'delivery:list' }));
   expect(view.jobs[0].target).toEqual(original);
