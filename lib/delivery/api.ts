@@ -1,13 +1,13 @@
 import { z } from '../schema';
 import {
-  DELIVERY_TEXT, GIT_BLOB_HASH_ALGORITHM, GIT_MODE, GIT_OBJECT, GIT_RECURSIVE, MAX_METADATA_BYTES,
+  DELIVERY_TEXT, GIT_BLOB_HASH_ALGORITHM, GIT_MODE, GIT_OBJECT, GIT_RECURSIVE, MAX_METADATA_BYTES, MAX_PUBLICATION_REBASES,
   deliveryPaths, deliveryRef, deliveryRoot,
 } from '../constants/delivery';
 import { GRADING_VERDICT } from '../constants/progress';
-import { GITHUB_COMPARISON, GITHUB_PAGINATION } from '../constants/github';
+import { GITHUB_COMPARISON, GITHUB_HTTP_STATUS, GITHUB_PAGINATION } from '../constants/github';
 import { destinationApi } from '../destination/api';
 import { githubRest } from '../github/rest';
-import { githubWrite } from '../github/errors';
+import { githubWrite, GithubWriteRejected } from '../github/errors';
 import { decodeGitBlob, InvalidRemoteFile } from '../github/blob';
 import type { ConnectedSession } from '../github/schemas';
 import {
@@ -20,6 +20,11 @@ type GitCommit = z.infer<typeof gitCommitSchema>;
 interface PublicationHooks {
   beforeWrite(): Promise<void>;
   prepared(candidate: PublicationCandidate): Promise<void>;
+}
+class PublicationConflict extends DeliveryFault {
+  constructor(readonly baseCommitSha: string, readonly rejection: GithubWriteRejected | null = null) {
+    super(DELIVERY_TEXT.headChanged);
+  }
 }
 
 async function blobSha(content: string): Promise<string> {
@@ -125,7 +130,13 @@ function publicationGraph(job: DeliveryJob, session: ConnectedSession, guard: ()
   async function update(candidate: PublicationCandidate) {
     const ref = await call(() => githubWrite(() => octokit.rest.git.updateRef({
       ...repo, ref: deliveryRef(job.target.branch), sha: candidate.commitSha, force: false,
-    })), gitRefSchema);
+    })), gitRefSchema).catch((error: unknown) => {
+      if (error instanceof GithubWriteRejected && (error.status === GITHUB_HTTP_STATUS.conflict
+        || error.status === GITHUB_HTTP_STATUS.unprocessableEntity)) {
+        throw new PublicationConflict(candidate.baseCommitSha, error);
+      }
+      throw error;
+    });
     if (ref.ref !== `refs/${deliveryRef(job.target.branch)}` || ref.object.sha !== candidate.commitSha) {
       throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
     }
@@ -205,18 +216,14 @@ async function publishAtHead(
   await guard();
   await hooks.prepared(candidate);
   const latest = await graph.destination.branch(job.target.name, job.target.branch);
-  if (latest.commit.sha !== base.sha) throw new DeliveryFault(DELIVERY_TEXT.headChanged);
+  if (latest.commit.sha !== base.sha) throw new PublicationConflict(base.sha);
   return graph.update(candidate);
 }
 
 export async function publishAttempt(
   job: DeliveryJob, session: ConnectedSession, guard: () => Promise<void>, signal: AbortSignal, hooks: PublicationHooks,
 ) {
-  const graph = publicationGraph(job, session, guard, signal);
-  const expected = await expectedPublication(job);
-  const branch = await graph.destination.verify(job.target);
-  const base = await graph.commit(branch.commit.sha);
-  return publishAtHead(graph, { job, expected, base, tree: await graph.tree(base.tree.sha) }, guard, hooks);
+  return deliverAttempt(job, session, guard, signal, hooks, false);
 }
 
 async function originalPublication(
@@ -238,39 +245,93 @@ async function originalPublication(
       if (!original || await graph.ancestor(commit.sha, original.sha)) original = commit;
       else if (!await graph.ancestor(original.sha, commit.sha)) throw new DeliveryBlocked(DELIVERY_TEXT.receiptUnavailable);
     }
-    if (!result.next) return { original, hadHistory: seen.size !== 0 };
+    if (!result.next) return original;
   }
   throw new DeliveryBlocked(DELIVERY_TEXT.receiptUnavailable);
+}
+
+async function hasAttemptHistory(
+  graph: ReturnType<typeof publicationGraph>, expected: ExpectedPublication, head: string,
+): Promise<boolean> {
+  const history = await graph.history(head, expected.root, 1);
+  return history.commits.length !== 0;
 }
 
 export async function reconcileAttempt(
   job: DeliveryJob, session: ConnectedSession, guard: () => Promise<void>, signal: AbortSignal, hooks: PublicationHooks,
 ) {
+  return deliverAttempt(job, session, guard, signal, hooks, true);
+}
+
+async function deliverAttempt(
+  job: DeliveryJob, session: ConnectedSession, guard: () => Promise<void>, signal: AbortSignal,
+  hooks: PublicationHooks, reconcile: boolean,
+) {
   const graph = publicationGraph(job, session, guard, signal);
   const expected = await expectedPublication(job);
-  const branch = await graph.destination.verify(job.target);
-  const head = await graph.commit(branch.commit.sha);
-  const tree = await graph.tree(head.tree.sha);
-  if (!await graph.complete(tree, expected)) {
-    if (hasAttemptPath(tree, expected)) throw new DeliveryBlocked(DELIVERY_TEXT.existingPath);
-    if (job.candidate === undefined) {
-      const history = await originalPublication(job, graph, expected, head.sha);
-      if (history.hadHistory) throw new DeliveryBlocked(DELIVERY_TEXT.legacyUncertain);
+  let candidate = job.candidate;
+  let conflict: PublicationConflict | null = null;
+  let rebases = 0;
+  const checkpointHooks: PublicationHooks = {
+    beforeWrite: hooks.beforeWrite,
+    async prepared(prepared) {
+      await hooks.prepared(prepared);
+      candidate = prepared;
+    },
+  };
+  while (true) {
+    const branch = await graph.destination.verify(job.target);
+    const head = await graph.commit(branch.commit.sha);
+    const tree = await graph.tree(head.tree.sha);
+    if (conflict) {
+      // A 409/422 alone can also mean branch policy or validation failure, not a race.
+      if (head.sha === conflict.baseCommitSha) {
+        throw conflict.rejection ?? new DeliveryBlocked(DELIVERY_TEXT.headChanged);
+      }
+      if (!await graph.ancestor(conflict.baseCommitSha, head.sha)) {
+        throw new DeliveryBlocked(DELIVERY_TEXT.historyChanged);
+      }
     }
-    if (!job.candidate) return publishAtHead(graph, { job, expected, base: head, tree }, guard, hooks);
-    await verifyCandidate(graph, job.candidate, expected);
-    if (head.sha !== job.candidate.baseCommitSha) throw new DeliveryBlocked(DELIVERY_TEXT.headChanged);
-    await guard();
-    await hooks.beforeWrite();
-    return graph.update(job.candidate);
+    if (reconcile || conflict) {
+      if (await graph.complete(tree, expected)) {
+        let original: GitCommit | null = null;
+        if (candidate) {
+          const prepared = await verifyCandidate(graph, candidate, expected);
+          if (await graph.ancestor(prepared.sha, head.sha)) original = prepared;
+        }
+        original ??= await originalPublication(job, graph, expected, head.sha);
+        if (!original) throw new DeliveryBlocked(DELIVERY_TEXT.receiptUnavailable);
+        await guard();
+        return { commitSha: original.sha, treeSha: original.tree.sha, confirmedAt: new Date().toISOString() };
+      }
+      if (hasAttemptPath(tree, expected)) throw new DeliveryBlocked(DELIVERY_TEXT.existingPath);
+      if (!candidate && await hasAttemptHistory(graph, expected, head.sha)) {
+        throw new DeliveryBlocked(candidate === undefined ? DELIVERY_TEXT.legacyUncertain : DELIVERY_TEXT.historyChanged);
+      }
+      if (candidate) {
+        await verifyCandidate(graph, candidate, expected);
+        if (head.sha !== candidate.baseCommitSha) {
+          // An absent record is not permission to resurrect a remotely removed attempt.
+          if (!await graph.ancestor(candidate.baseCommitSha, head.sha)
+            || await graph.ancestor(candidate.commitSha, head.sha)
+            || await hasAttemptHistory(graph, expected, head.sha)) {
+            throw new DeliveryBlocked(DELIVERY_TEXT.historyChanged);
+          }
+          if (rebases >= MAX_PUBLICATION_REBASES) throw new DeliveryBlocked(DELIVERY_TEXT.conflictLimit);
+          rebases++;
+        }
+      }
+    }
+    try {
+      if (candidate && candidate.baseCommitSha === head.sha) {
+        await guard();
+        await hooks.beforeWrite();
+        return await graph.update(candidate);
+      }
+      return await publishAtHead(graph, { job, expected, base: head, tree }, guard, checkpointHooks);
+    } catch (error) {
+      if (!(error instanceof PublicationConflict)) throw error;
+      conflict = error;
+    }
   }
-  let original: GitCommit | null = null;
-  if (job.candidate) {
-    const prepared = await verifyCandidate(graph, job.candidate, expected);
-    if (await graph.ancestor(prepared.sha, head.sha)) original = prepared;
-  }
-  original ??= (await originalPublication(job, graph, expected, head.sha)).original;
-  if (!original) throw new DeliveryBlocked(DELIVERY_TEXT.receiptUnavailable);
-  await guard();
-  return { commitSha: original.sha, treeSha: original.tree.sha, confirmedAt: new Date().toISOString() };
 }

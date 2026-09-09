@@ -14,6 +14,7 @@ export const GIT_BLOB_HASH_ALGORITHM = 'SHA-1';
 export const GIT_RECURSIVE = '1';
 export const MAX_TREE_ENTRIES = 100_000;
 export const MAX_METADATA_BYTES = 16 * 1024;
+export const MAX_PUBLICATION_REBASES = 2;
 export const DELIVERY_TEXT = {
   awaiting: 'Accepted - awaiting GitHub delivery',
   saved: 'Saved to GitHub',
@@ -30,6 +31,8 @@ export const DELIVERY_TEXT = {
   invalidResponse: 'GitHub returned an unsupported publication response.',
   existingPath: 'An attempt path already exists on GitHub but its source or metadata is incomplete or inconsistent. No files were overwritten.',
   headChanged: 'The branch changed during publication. No remote work was overwritten.',
+  conflictLimit: 'The branch kept advancing. The attempt is retained; check GitHub and retry after other writers finish. No remote work was overwritten.',
+  historyChanged: 'The branch history was replaced or the attempt was removed remotely. Review GitHub before retrying; no files were recreated or overwritten.',
   rejected: 'GitHub rejected publication. Check repository permissions, rate limits, branch rules, or concurrent branch changes. The accepted attempt is retained.',
   requestFailed: 'GitHub could not complete publication checks. Review access, rate limits, and service availability.',
   networkError: 'GitHub could not be reached. The accepted attempt is retained.',

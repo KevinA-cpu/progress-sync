@@ -377,12 +377,13 @@ test('a concurrent branch advance is preserved by the non-force update', async (
   server.advanceBeforeUpdate = true;
   await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
-  await expect(progress.getByText('Delivery blocked: GitHub rejected publication.', { exact: false })).toBeVisible();
+  await expect(progress.getByText('Saved to GitHub', { exact: true })).toBeVisible();
   expect(server.files.get('concurrent.txt')).toBe('Another writer.\n');
   expect(server.files.get('README.md')).toBe('Keep this learner file.\n');
-  expect(server.updates).toBe(0);
-  expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toEqual([]);
-  await expect(progress.getByRole('link', { name: /^Commit / })).toHaveCount(0);
+  expect(server.updates).toBe(1);
+  expect(server.writes).toHaveLength(6);
+  expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(2);
+  await expect(progress.getByRole('link', { name: `Commit ${server.head}` })).toBeVisible();
 });
 
 test('a later accepted attempt preserves the previously published progress', async ({

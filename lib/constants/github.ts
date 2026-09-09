@@ -29,7 +29,7 @@ export const GITHUB_TEXT_ENCODING = 'utf-8';
 export const githubBase64CharacterLimit = (byteLimit: number) => 8 * Math.ceil(byteLimit / 3);
 export const GITHUB_HTTP_STATUS = {
   created: 201, clientErrorStart: 400, unauthorized: 401, forbidden: 403, notFound: 404,
-  requestTimeout: 408, conflict: 409, serverErrorStart: 500,
+  requestTimeout: 408, conflict: 409, unprocessableEntity: 422, serverErrorStart: 500,
 } as const;
 export const AUTH_STATUS = {
   disconnected: 'disconnected', authorizing: 'authorizing', connected: 'connected', unavailable: 'unavailable',
