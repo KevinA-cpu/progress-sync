@@ -16,9 +16,20 @@
       <h2>Local queue and history</h2>
       <p>Disconnecting GitHub or restarting the browser retains captured source, pending delivery jobs, and saved history.
         Retained jobs stay bound to their original GitHub account, App, installation, repository, and branch.
-        Reconnecting or changing the selected destination does not resume or redirect these jobs automatically.</p>
-      <p>Reconnect with the original account and App, then select and verify the original destination before choosing
-        “Check GitHub and retry delivery”. Requests already issued may complete even after disconnect.</p>
+        Changing the selected destination never redirects a job to it.</p>
+      <p>Queued work interrupted by a temporary outage, a rate limit, or a stopped worker resumes on its own, on a
+        bounded schedule of at most five spaced attempts. Each attempt reverifies the original account and destination
+        and proves the complete remote record before writing, so a resumed job cannot publish twice. Work blocked by
+        authorization, permission, validation, or branch policy, and work that has spent its attempts, waits for you.</p>
+      <p>When GitHub states a time to wait, nothing is sent before it: that wait applies to every queued job for the
+        same account and App, to newly accepted attempts, and to “Check GitHub and retry delivery”, which reports the
+        time instead of sending early. A wait longer than this browser can schedule is explained and left for you.
+        If automatic scheduling itself fails, this page says so rather than promising an attempt that cannot happen.</p>
+      <p>After a browser restart or a disconnect, resumption waits for you to reconnect the original account and App and
+        to verify the original destination again; credentials are never restored. Requests already issued may complete
+        even after disconnect.</p>
+      <p>Undelivered work is stored only in this browser profile. Clearing extension storage, removing the extension, or
+        losing this device loses attempts that were never saved to GitHub.</p>
       <p>“Discard local attempt” removes an unsaved attempt's captured source and delivery job only from this browser.
         This cannot be undone and does not delete anything on GitHub or prove that publication never happened.
         Saved receipts are not discardable here.</p>

@@ -442,6 +442,7 @@ test('a real browser restart retains pending work in the same profile but requir
     const remote = await publicationFixture(restarted, destination);
     const requests = await observeApi(restarted);
     const worker = restarted.serviceWorkers()[0] ?? await restarted.waitForEvent('serviceworker');
+    await worker.evaluate(() => { const now = Date.now(); Date.now = () => now; });
     const restored = await restarted.newPage();
     await restored.goto(`chrome-extension://${new URL(worker.url()).hostname}/options.html`);
     await expect(restored.getByRole('status')).toHaveText('1 captured attempt.');

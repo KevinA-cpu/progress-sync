@@ -111,7 +111,7 @@ test('an older local attempt requires an explicit public destination selection',
   expect(server.updates).toBe(1);
 });
 
-test('a job is durable before the first write and survives interrupted publication without retry', async ({
+test('a job is durable before the first write and survives interrupted publication without replaying it', async ({
   extensionContext, progress, problem,
 }) => {
   const { server } = await setup(extensionContext, progress);
@@ -267,7 +267,7 @@ test('a tree response without the complete intended files cannot produce a saved
 
 for (const stage of ['tree', 'commit', 'ref'] as const) {
   for (const outcome of ['rejected', 'lost'] as const) {
-    test(`${outcome} ${stage} publication never fabricates a receipt or retries the job`, async ({
+    test(`${outcome} ${stage} publication never fabricates a receipt or replays its write`, async ({
       extensionContext, progress, problem,
     }) => {
       const { server } = await setup(extensionContext, progress);
@@ -312,7 +312,7 @@ test('an explicit rate-limit rejection is blocked rather than confused with a lo
 });
 
 for (const status of [408, 503]) {
-  test(`a ${status} write response stays uncertain and is not retried`, async ({
+  test(`a ${status} write response stays uncertain and waits for its scheduled attempt`, async ({
     extensionContext, progress, problem,
   }) => {
     const { server } = await setup(extensionContext, progress);
@@ -326,6 +326,9 @@ for (const status of [408, 503]) {
     await expect(progress.getByText('Publication outcome is uncertain.', { exact: false })).toBeVisible();
     expect(server.writes).toHaveLength(count);
     await expect(progress.getByRole('link', { name: /^Commit / })).toHaveCount(0);
+    const reply = await progress.evaluate(() => chrome.runtime.sendMessage({ type: 'delivery:list' }));
+    expect(reply.jobs[0].retry).toMatchObject({ attempts: 0, failure: 'transient' });
+    expect(Date.parse(reply.jobs[0].retry.nextAttemptAt) - Date.now()).toBeGreaterThan(30_000);
   });
 }
 
@@ -523,6 +526,8 @@ test('publication rechecks permissions and repository identity after onboarding'
   target.contentsWrite = true;
   await page.getByRole('button', { name: 'Verify pending or saved repository' }).click();
   await expect(page.getByRole('status')).toContainText('Verified destination:');
+  await expect(progress.getByRole('region', { name: 'Saved progress from GitHub' })
+    .getByText('0 recorded accepted; 0 unverified saved entries.', { exact: true })).toBeVisible();
   target.repositoryId = 202;
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(progress.getByText('Delivery blocked: The repository identity, owner, or visibility changed.', { exact: false })).toBeVisible();

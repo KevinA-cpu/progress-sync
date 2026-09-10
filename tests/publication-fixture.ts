@@ -55,6 +55,7 @@ interface PublicationFixture {
   refGate: Promise<void> | null;
   failAt: WriteStage | null;
   failStatus: number;
+  failHeaders: Record<string, string> | null;
   loseBeforeAt: WriteStage | null;
   loseResponseAt: WriteStage | null;
   historyPageSize: number | null;
@@ -106,6 +107,7 @@ export async function publicationFixture(
     refGate: null,
     failAt: null,
     failStatus: 403,
+    failHeaders: null,
     loseBeforeAt: null,
     loseResponseAt: null,
     historyPageSize: null,
@@ -383,7 +385,8 @@ export async function publicationFixture(
       return route.fulfill({ status: 422, json: { message } });
     };
     const fail = () => route.fulfill({
-      status: server.failStatus, json: { message: 'SYNTHETIC_PRIVATE_DIAGNOSTIC' },
+      status: server.failStatus, headers: server.failHeaders ?? {},
+      json: { message: 'SYNTHETIC_PRIVATE_DIAGNOSTIC' },
     });
     check(z.looseObject({}).safeParse(body).success, `${method} ${path}: expected an object`);
 

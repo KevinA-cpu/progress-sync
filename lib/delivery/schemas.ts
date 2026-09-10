@@ -1,6 +1,7 @@
 import { z } from '../schema';
 import {
-  DELIVERY_MESSAGE, DELIVERY_STATE, DELIVERY_TEXT, GIT_MODE, GIT_OBJECT, MAX_METADATA_BYTES, MAX_TREE_ENTRIES,
+  DELIVERY_FAILURE, DELIVERY_MESSAGE, DELIVERY_RETRY, DELIVERY_STATE, DELIVERY_TEXT, GIT_MODE, GIT_OBJECT,
+  MAX_METADATA_BYTES, MAX_TREE_ENTRIES,
 } from '../constants/delivery';
 import { CAPTURE_PROVENANCE, CAPTURE_STATE, GRADING_VERDICT, PROGRESS_PROVIDER } from '../constants/progress';
 import { attemptSchema, problemIdSchema, submittedSourceSchema } from '../progress';
@@ -31,13 +32,27 @@ export const publicationCandidateSchema = z.strictObject({
   baseCommitSha: gitShaSchema, treeSha: gitShaSchema, commitSha: gitShaSchema,
 });
 export type PublicationCandidate = z.infer<typeof publicationCandidateSchema>;
+export const deliveryRetrySchema = z.strictObject({
+  attempts: z.int().nonnegative().max(DELIVERY_RETRY.recordedAttemptLimit),
+  nextAttemptAt: z.iso.datetime().nullable(), failure: z.enum(DELIVERY_FAILURE),
+  reservedAt: z.iso.datetime().nullish(),
+});
+export type DeliveryRetry = z.infer<typeof deliveryRetrySchema>;
+export const deliveryThrottleSchema = z.record(z.string().min(1).max(256), z.iso.datetime());
+export type DeliveryThrottle = z.infer<typeof deliveryThrottleSchema>;
+export const scheduleHealthSchema = z.strictObject({
+  schemaVersion: z.literal(1), failedAt: z.iso.datetime(), detail: z.string().min(1).max(1024),
+});
+export type ScheduleHealth = z.infer<typeof scheduleHealthSchema>;
 export const deliveryJobSchema = z.strictObject({
   schemaVersion: z.literal(1), id: z.uuid(), snapshot: acceptedSnapshotSchema, target: destinationTargetSchema,
   createdAt: z.iso.datetime(), state: z.enum(DELIVERY_STATE), detail: z.string().nullable(),
   receipt: deliveryReceiptSchema.nullable(),
   candidate: publicationCandidateSchema.nullable().optional(),
+  retry: deliveryRetrySchema.nullable().optional(),
 }).refine(job => job.id === job.snapshot.id
   && (job.state === DELIVERY_STATE.saved) === (job.receipt !== null)
+  && (job.state !== DELIVERY_STATE.saved || !job.retry?.nextAttemptAt)
   && ((job.state === DELIVERY_STATE.blocked || job.state === DELIVERY_STATE.uncertain) === (job.detail !== null)));
 export const deliveryJobsSchema = z.array(deliveryJobSchema)
   .refine(jobs => new Set(jobs.map(job => job.id)).size === jobs.length);
@@ -61,7 +76,10 @@ export const deliveryRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal(DELIVERY_MESSAGE.list) }), publishRequestSchema, retryRequestSchema, discardRequestSchema,
 ]);
 export const deliveryReplySchema = z.discriminatedUnion('ok', [
-  z.strictObject({ ok: z.literal(true), jobs: deliveryJobsSchema, selection: destinationTargetSchema.nullable() }),
+  z.strictObject({
+    ok: z.literal(true), jobs: deliveryJobsSchema, selection: destinationTargetSchema.nullable(),
+    scheduling: scheduleHealthSchema.nullable(),
+  }),
   z.strictObject({ ok: z.literal(false), error: z.string() }),
 ]);
 export type DeliveryReply = z.infer<typeof deliveryReplySchema>;

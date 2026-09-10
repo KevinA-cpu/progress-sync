@@ -32,8 +32,10 @@
       <p>Disconnect clears local credentials. Disconnecting or restarting the browser retains captured source,
         pending delivery jobs, and saved history. Each delivery job stays bound to its original GitHub account,
         App, installation, repository, and branch; a different account or destination cannot take it over.</p>
-      <p>Reconnect with the original account and App, then select and verify the original destination before explicitly
-        checking GitHub and retrying a retained job. Reconnecting does not resume these jobs automatically.</p>
+      <p>Reconnect with the original account and App, then select and verify the original destination. Only after that
+        verification can a job left queued by a temporary failure resume on its own bounded schedule, still bound to
+        its original destination. Jobs blocked by authorization, permission, validation, or branch policy wait for an
+        explicit check-and-retry instead.</p>
       <p>Requests already issued may still complete after disconnect. Disconnecting or discarding local work does not
         delete repositories, files, or commits on GitHub, and does not prove that publication never happened.</p>
       <p>Disconnect does not revoke GitHub-side App authorization or uninstall the App. To change GitHub-side access:</p>

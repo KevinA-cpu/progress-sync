@@ -1,6 +1,11 @@
-import { test as base, chromium, type BrowserContext, type Page } from '@playwright/test';
+import { test as base, chromium, type BrowserContext, type Page, type Worker } from '@playwright/test';
 import { resolve } from 'node:path';
 import { cp, writeFile } from 'node:fs/promises';
+import type { Browser } from 'wxt/browser';
+
+declare const chrome: typeof Browser;
+
+export const DELIVERY_RETRY_ALARM = 'delivery-retry-v1';
 
 export const submittedSource = "module top_module(output one);\nassign one = 1'b1;\nendmodule\n";
 export const submittedBytes = "module top_module(output one);\r\nassign one = 1'b1;\r\nendmodule\r\n";
@@ -93,6 +98,33 @@ export const test = base.extend<ExtensionFixtures>({
 });
 
 export { expect } from '@playwright/test';
+
+export function extensionWorker(context: BrowserContext): Worker {
+  const worker = context.serviceWorkers()[0];
+  if (!worker) throw new Error('Expected the extension worker to be running.');
+  return worker;
+}
+
+const deliveryClockShift = new WeakMap<BrowserContext, number>();
+
+export async function advanceDeliverySchedule(
+  context: BrowserContext, milliseconds: number, wake = true,
+): Promise<void> {
+  const shift = (deliveryClockShift.get(context) ?? 0) + milliseconds;
+  deliveryClockShift.set(context, shift);
+  await extensionWorker(context).evaluate(async input => {
+    const real = () => Math.round(performance.timeOrigin + performance.now());
+    Date.now = () => real() + input.shift;
+    if (input.wake) await chrome.alarms.create(input.alarm, { when: real() });
+  }, { shift, wake, alarm: DELIVERY_RETRY_ALARM });
+}
+
+export async function deliveryAlarm(context: BrowserContext): Promise<number | null> {
+  return extensionWorker(context).evaluate(async name => {
+    const alarm = await chrome.alarms.get(name);
+    return alarm ? alarm.scheduledTime : null;
+  }, DELIVERY_RETRY_ALARM);
+}
 
 export async function stopExtensionWorker(context: BrowserContext, page: Page): Promise<void> {
   const worker = context.serviceWorkers()[0];

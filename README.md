@@ -307,12 +307,105 @@ files are preserved. A saved receipt links to the confirmed complete commit and
 is stored locally, outside its own committed metadata.
 
 Actual permission/ruleset failures remain blocked with the accepted snapshot
-intact. Lost responses and interrupted publication remain uncertain and are not
-automatically retried or called successful, even if GitHub may have applied the
-update. Worker/browser restart does not erase these jobs. Creating Git objects
-can leave unreferenced objects if a later step fails; only the final branch update
-makes the complete commit visible on the selected branch. Automatic retry
-scheduling remains a later ticket.
+intact. Lost responses and interrupted publication remain uncertain and are never
+called successful, even if GitHub may have applied the update; they are resolved
+by inspection, not by replaying the write. Worker/browser restart does not erase
+these jobs. Creating Git objects can leave unreferenced objects if a later step
+fails; only the final branch update makes the complete commit visible on the
+selected branch.
+
+### Automatic resumption of queued uploads
+
+An accepted attempt that could not be delivered because of a temporary outage,
+an explicit rate limit, or a stopped worker resumes without a popup or a manual
+retry. Scheduling state lives in the durable job, not in worker memory:
+
+- Each failed attempt stores a `retry` record with the spent unattended attempt
+  count, the earliest next attempt time, and the failure classification.
+  Jobs written before this feature have no record and stay manual-only.
+- Work a stopped worker left `pending`, `publishing`, or `reconciling` is
+  adopted on the next worker start and given the same bounded schedule.
+- One durable write both spends an attempt and marks it reserved. A worker lost
+  after that write but before its request leaves a reservation the next sweep
+  adopts: the spent attempt stands, the wait moves to the next bounded step, and
+  no free attempt is issued. A queued unattended request whose reservation no
+  longer matches the stored job is abandoned, so a newer deadline or a permanent
+  classification cannot be bypassed by an earlier wakeup.
+- Writing one job never rewrites another. Normalizing an inactive
+  `publishing` job at write time would erase the evidence its own adoption needs.
+- A single named alarm (`delivery-retry-v1`) is always re-armed for the earliest
+  future attempt time and cleared when nothing is scheduled, so alarms cannot
+  accumulate. Overdue work is never given a zero-delay alarm; it waits for the
+  next real trigger. Triggers are worker start, `runtime.onStartup`, that alarm,
+  the completion of any delivery attempt, and a successful destination
+  verification.
+- The budget is **at most five** unattended attempts per job, spaced 1m, 4m,
+  16m, 64m, then a 2h ceiling. The spent attempt is persisted *before* the
+  request, so a worker lost mid-attempt cannot replay it for free. An explicit
+  **Check GitHub and retry delivery** re-arms the budget; account and destination
+  events never do.
+
+Failures are classified rather than lumped together. Only transport failures,
+408, 5xx, and explicit rate limiting are eligible. A bare 403 stays an ambiguous
+permission failure. Authorization (401), permission, missing resources,
+validation, unsupported responses, existing inconsistent paths, and branch-policy
+rejections are never retried unattended; those jobs stay retained, visible, and
+manually actionable, as do jobs that have spent their budget.
+
+### Stated rate-limit deadlines
+
+A `Retry-After` header — whole seconds or an HTTP date — or
+`x-ratelimit-remaining: 0` with `x-ratelimit-reset` states a time before which
+this client must not send again. That deadline is a **minimum this client never
+shortens**: the internal backoff is bounded, the provider's own wait is not, and
+the attempt is scheduled at whichever is later. Such a response also keeps the
+destination selected rather than pausing it for lost access.
+
+The deadline belongs to the authenticated owner and App, not to one job. It is
+stored as a timestamp under an owner/App key — never a token and never provider
+header text — and it holds back every queued job, every newly captured attempt,
+and every explicit **Check GitHub and retry delivery** for that authority until
+it passes.
+
+The attempt's outcome and that deadline are written in **one** `storage.local`
+transaction. A worker lost between two writes, or a failed second write, could
+otherwise retain a throttled job with no shared floor and let the next job send
+early. The deadline also takes effect in the running worker before the write, so
+even a failed write cannot let this worker send for that authority; the next
+sweep repairs the stored floor, and if that write fails too the failure is shown
+rather than logged away. A floor that never reached storage cannot survive worker
+death — but neither did the outcome, so the job stays mid-publication and its
+next attempt reconciles before writing, at which point GitHub restates the wait. An explicit retry inside the window is refused with the time, rather
+than being sent early. A deferred unattended attempt returns its reservation to
+the budget, because nothing was sent.
+
+A stated wait longer than 24 hours, or a `Retry-After` this client cannot read,
+is not treated as "no delay" and is not silently shortened: the job is blocked
+with an explanation, nothing is scheduled, and any recorded deadline still holds
+back explicit retries. Deadlines beyond seven days are not trusted as timestamps
+at all, so they block the job without locking the learner out indefinitely.
+
+A scheduled attempt is not a shortcut. It re-resolves the current selection and
+requires the original account, App, installation, repository, and branch; it
+never redirects a job. After a disconnect or browser restart the credential is
+gone, so scheduled work simply stays queued until the original account is
+reauthorized and the original destination is verified again. Tokens are never
+restored from durable storage. Every attempt runs through the same serialized,
+idempotent publication path used by capture and manual retry, and interrupted or
+uncertain work is reconciled against the complete remote record before any
+replay, so duplicate wakeups and overlapping triggers cannot publish twice.
+
+If a sweep cannot read, write, or register its wakeup, the progress view says so
+in an alert and each queued job says that no automatic wakeup could be
+registered, instead of claiming that no action is needed. Jobs and their
+deadlines are left untouched, nothing retries in a loop, and the next real
+trigger — a recreated worker, a verified destination, or a finished attempt —
+re-arms the wakeup and clears the warning.
+
+Undelivered work is stored only in this browser profile. Clearing extension
+storage, removing the extension, or losing the device loses attempts that were
+never saved to GitHub. Storage failures stay visible in the log and the progress
+view instead of turning into a retry loop.
 
 ### Check GitHub and retry delivery
 
@@ -338,7 +431,8 @@ serialized and re-read the durable job before acting.
 
 Incomplete or inconsistent remote records stay blocked without overwriting them.
 A branch change that cannot be safely reconciled is also blocked; retry never
-force-pushes. Read failures remain visible and retained, with no automatic retry loop.
+force-pushes. Read failures remain visible and retained; a transport read failure
+may be rechecked on the bounded schedule above, never in a loop.
 
 For older jobs without a prepared-commit checkpoint, a bounded metadata-path
 history search can recover the original atomic introduction. If both the current
@@ -379,9 +473,9 @@ Existing unrelated and user-edited records remain untouched.
 Each invocation permits at most **two rebases** after its initial/prepared
 candidate. If the branch keeps advancing, the job retains its snapshot and
 checkpoint with a visible blocked status and **Check GitHub and retry delivery**
-action. This bounds conflict recovery; it is not automatic retry scheduling.
-Protection, permission, validation, and rate-limit failures never cause an
-unbounded retry loop.
+action. This bounds conflict recovery within one invocation; it is separate from
+the bounded resumption schedule. Protection, permission, validation, and
+rate-limit failures never cause an unbounded retry loop.
 
 ## Retained work and local discard
 
@@ -568,6 +662,11 @@ grading certificate: a compromised provider or browser is outside this proof.
   promote it afterward. Accepted records survive page reload and worker restart.
 - Existing source without valid acceptance metadata can only be shown as
   unverified. Unsaved guest history cannot be reconstructed.
+- Automatic resumption is local durability only. Undelivered jobs live in this
+  browser profile; clearing extension storage, removing the extension, or losing
+  the device loses them. Resumption also cannot outlast its bounded budget, run
+  without a reauthorized original account and a verified original destination, or
+  repair a permission, validation, or branch-policy rejection.
 
 ## Validation
 
@@ -605,6 +704,23 @@ reference responses, and a real browser restart. Local-discard tests cover
 confirmation, credential/source removal, failed storage, active and queued jobs,
 stale requests, repeated observations from a discarded attempt's result document,
 and preservation of remote contents.
+
+Resumption tests drive the real alarm, storage, and worker lifecycle interfaces
+with controlled browser time and controlled network failures instead of waiting
+out the production schedule. They cover offline-to-online recovery, worker
+termination and re-arming, a real browser restart that waits for reauthorization
+and destination verification, duplicate and overlapping wakeups, an exhausted
+budget, a permanent rejection that is never rescheduled, an attempt reserved but
+never sent before the worker died, a write for one job that must not disturb
+another left mid-publication, and injected alarm and storage failures that must
+be visible and recoverable.
+
+Rate-limit tests state deadlines in every form GitHub can use — long whole
+seconds, an HTTP date, and a distant primary-limit reset — and require the
+scheduled attempt and its wakeup to honour them in full. They also cover an
+explicit retry refused inside a cooldown, a second captured attempt inheriting
+the same authority-wide deadline, a deadline beyond the supported window, and an
+unreadable `Retry-After`.
 
 Recovery tests close the original browser and launch a fresh profile without
 copying local storage or credentials. They reconnect through the real extension

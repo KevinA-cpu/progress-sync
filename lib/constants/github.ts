@@ -29,8 +29,15 @@ export const GITHUB_TEXT_ENCODING = 'utf-8';
 export const githubBase64CharacterLimit = (byteLimit: number) => 8 * Math.ceil(byteLimit / 3);
 export const GITHUB_HTTP_STATUS = {
   created: 201, clientErrorStart: 400, unauthorized: 401, forbidden: 403, notFound: 404,
-  requestTimeout: 408, conflict: 409, unprocessableEntity: 422, serverErrorStart: 500,
+  requestTimeout: 408, conflict: 409, unprocessableEntity: 422, tooManyRequests: 429, serverErrorStart: 500,
 } as const;
+export const GITHUB_RATE_LIMIT_HEADER = {
+  retryAfter: 'retry-after', remaining: 'x-ratelimit-remaining', reset: 'x-ratelimit-reset',
+} as const;
+export const RATE_LIMIT_SIGNAL = { wait: 'wait', unsupported: 'unsupported' } as const;
+export const MAX_SCHEDULED_RATE_LIMIT_DELAY_MS = 24 * 60 * 60 * 1000;
+export const MAX_TRUSTED_RATE_LIMIT_DELAY_MS = 7 * 24 * 60 * 60 * 1000;
+export const HTTP_DATE_PATTERN = /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
 export const AUTH_STATUS = {
   disconnected: 'disconnected', authorizing: 'authorizing', connected: 'connected', unavailable: 'unavailable',
 } as const;

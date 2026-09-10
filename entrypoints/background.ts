@@ -57,7 +57,9 @@ export default defineBackground(() => {
       case DESTINATION_MESSAGE_PREFIX:
         void destination.message(message, sender).then(reply => {
           sendResponse(reply);
-          if (reply.ok && reply.view.verified && messageType !== DESTINATION_MESSAGE.create) void recovery.selected();
+          if (!reply.ok || !reply.view.verified) return;
+          delivery.resume();
+          if (messageType !== DESTINATION_MESSAGE.create) void recovery.selected();
         }, () => {
           console.error(DESTINATION_TEXT.operationFailed);
           const reply: DestinationReply = { ok: false, error: DESTINATION_ISSUE.networkError };
@@ -88,5 +90,10 @@ export default defineBackground(() => {
   browser.tabs.onUpdated.addListener((tabId, changes) => {
     if (changes.status === TAB_STATUS.loading || changes.discarded === true) github.ownerClosed(tabId);
   });
-  browser.alarms.onAlarm.addListener(alarm => github.alarm(alarm.name));
+  browser.alarms.onAlarm.addListener(alarm => {
+    github.alarm(alarm.name);
+    delivery.alarm(alarm.name);
+  });
+  browser.runtime.onStartup.addListener(() => { delivery.resume(); });
+  delivery.resume();
 });

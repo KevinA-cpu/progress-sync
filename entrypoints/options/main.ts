@@ -2,7 +2,11 @@ import { DOM_EVENT, STORAGE_AREA, UI_ROLE } from '../../lib/constants/browser';
 import { CAPTURE_STATE, PROGRESS_KEY, PROGRESS_MESSAGE, PROGRESS_TEXT } from '../../lib/constants/progress';
 import { browser } from 'wxt/browser';
 import { progressReplySchema, type Attempt } from '../../lib/progress';
-import { DELIVERY_KEY, DELIVERY_MESSAGE, DELIVERY_STATE, DELIVERY_TEXT, deliveryCommitUrl } from '../../lib/constants/delivery';
+import {
+  DELIVERY_FAILURE, DELIVERY_KEY, DELIVERY_MESSAGE, DELIVERY_RETRY, DELIVERY_SCHEDULE_KEY, DELIVERY_STATE,
+  DELIVERY_TEXT, DELIVERY_THROTTLE_KEY, deliveryCommitUrl,
+} from '../../lib/constants/delivery';
+import { retryExhausted } from '../../lib/delivery/retry';
 import { AUTH_SESSION_KEY } from '../../lib/constants/github';
 import { DESTINATION_STORAGE_PREFIX } from '../../lib/constants/destination';
 import { LIFECYCLE_TEXT } from '../../lib/constants/lifecycle';
@@ -41,7 +45,7 @@ async function deliveryAction(
 }
 
 function renderAttempt(
-  attempt: Attempt, selection: DestinationTarget | null, generation: number, job?: DeliveryJob,
+  attempt: Attempt, selection: DestinationTarget | null, generation: number, scheduled: boolean, job?: DeliveryJob,
 ): HTMLElement {
   const article = document.createElement('article');
   const heading = document.createElement('h2');
@@ -99,6 +103,22 @@ function renderAttempt(
     if (job.state !== DELIVERY_STATE.saved) {
       const operationActive = job.state === DELIVERY_STATE.publishing || job.state === DELIVERY_STATE.reconciling;
       const compatible = selection !== null && sameDestination(selection, job.target);
+      const retrySchedule = job.retry ?? null;
+      if (retrySchedule?.nextAttemptAt) {
+        const queued = document.createElement('p');
+        const attempt = retrySchedule.attempts + 1;
+        queued.textContent = !scheduled
+          ? DELIVERY_TEXT.retryUnscheduled(attempt, DELIVERY_RETRY.maxAttempts, retrySchedule.nextAttemptAt)
+          : retrySchedule.failure === DELIVERY_FAILURE.rateLimited
+            ? DELIVERY_TEXT.retryThrottled(attempt, DELIVERY_RETRY.maxAttempts, retrySchedule.nextAttemptAt)
+            : DELIVERY_TEXT.retryScheduled(attempt, DELIVERY_RETRY.maxAttempts, retrySchedule.nextAttemptAt);
+        if (!scheduled) queued.setAttribute('role', UI_ROLE.alert);
+        article.append(queued);
+      } else if (retryExhausted(retrySchedule)) {
+        const exhausted = document.createElement('p');
+        exhausted.textContent = DELIVERY_TEXT.retryExhausted;
+        article.append(exhausted);
+      }
       if (!compatible) {
         const guidance = document.createElement('p');
         guidance.textContent = selection ? LIFECYCLE_TEXT.destinationChanged : LIFECYCLE_TEXT.reconnect;
@@ -175,8 +195,15 @@ async function load(): Promise<void> {
     const snapshots = new Map(reply.attempts.map(attempt => [attempt.id, attempt]));
     for (const job of delivery.jobs) snapshots.set(job.id, job.snapshot);
     const ordered = [...snapshots.values()].sort((left, right) => right.submittedAt.localeCompare(left.submittedAt));
+    const unscheduled = delivery.scheduling;
     attempts.replaceChildren(...ordered.map(attempt =>
-      renderAttempt(attempt, delivery.selection, generation, jobs.get(attempt.id))));
+      renderAttempt(attempt, delivery.selection, generation, unscheduled === null, jobs.get(attempt.id))));
+    if (unscheduled) {
+      const failure = document.createElement('p');
+      failure.textContent = unscheduled.detail;
+      failure.setAttribute('role', UI_ROLE.alert);
+      attempts.prepend(failure);
+    }
     status.textContent = snapshots.size === 0
       ? PROGRESS_TEXT.empty
       : PROGRESS_TEXT.attemptCount(snapshots.size);
@@ -191,6 +218,7 @@ async function load(): Promise<void> {
 refresh.addEventListener(DOM_EVENT.click, () => { void load(); });
 browser.storage.onChanged.addListener((changes, area) => {
   if ((area === STORAGE_AREA.local && (PROGRESS_KEY in changes || DELIVERY_KEY in changes
+    || DELIVERY_SCHEDULE_KEY in changes || DELIVERY_THROTTLE_KEY in changes
     || Object.keys(changes).some(key => key.startsWith(DESTINATION_STORAGE_PREFIX))))
     || (area === STORAGE_AREA.session && AUTH_SESSION_KEY in changes)) void load();
 });

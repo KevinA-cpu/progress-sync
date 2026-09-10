@@ -2,12 +2,26 @@ import { GITHUB_ORIGIN } from './github';
 
 export const DELIVERY_KEY = 'delivery-jobs-v1';
 export const DISCARDED_DELIVERY_KEY = 'discarded-deliveries-v1';
+export const DELIVERY_RETRY_ALARM = 'delivery-retry-v1';
+export const DELIVERY_THROTTLE_KEY = 'delivery-throttle-v1';
+export const DELIVERY_SCHEDULE_KEY = 'delivery-schedule-v1';
 export const DELIVERY_MESSAGE_PREFIX = 'delivery:';
 export const DELIVERY_MESSAGE = {
   list: 'delivery:list', publish: 'delivery:publish', retry: 'delivery:retry', discard: 'delivery:discard',
 } as const;
 export const DELIVERY_STATE = {
   pending: 'pending', publishing: 'publishing', reconciling: 'reconciling', blocked: 'blocked', uncertain: 'uncertain', saved: 'saved',
+} as const;
+export const DELIVERY_FAILURE = {
+  transient: 'transient', rateLimited: 'rate-limited', unsupportedDelay: 'unsupported-delay',
+  authorization: 'authorization', permanent: 'permanent',
+} as const;
+export const DELIVERY_RETRY = {
+  maxAttempts: 5,
+  initialDelayMs: 60_000,
+  factor: 4,
+  maxDelayMs: 2 * 60 * 60 * 1000,
+  recordedAttemptLimit: 1_000,
 } as const;
 export const GIT_OBJECT = { blob: 'blob', tree: 'tree', commit: 'commit' } as const;
 export const GIT_MODE = {
@@ -42,9 +56,25 @@ export const DELIVERY_TEXT = {
   rejected: 'GitHub rejected publication. Check repository permissions, rate limits, branch rules, or concurrent branch changes. The accepted attempt is retained.',
   requestFailed: 'GitHub could not complete publication checks. Review access, rate limits, and service availability.',
   networkError: 'GitHub could not be reached. The accepted attempt is retained.',
-  uncertain: 'Publication outcome is uncertain. Inspect GitHub; this job will not be retried automatically.',
-  interrupted: 'Publication was interrupted. Its outcome is uncertain; no automatic retry was made.',
+  uncertain: 'Publication outcome is uncertain. Inspect GitHub; the complete remote record is proven before any further write.',
+  interrupted: 'Publication was interrupted. Its outcome is uncertain; GitHub is rechecked before any further write.',
   operationFailed: 'Progress Sync: delivery operation did not complete.',
+  scheduleFailed: 'Progress Sync: automatic delivery scheduling did not complete.',
+  retryScheduled: (attempt: number, total: number, at: string) =>
+    `Queued for automatic delivery: attempt ${attempt} of ${total} no earlier than ${at}. No action is needed while it is queued.`,
+  retryThrottled: (attempt: number, total: number, at: string) =>
+    `GitHub asked this client to wait. Automatic attempt ${attempt} of ${total} no earlier than ${at}.`,
+  retryExhausted: 'Automatic delivery attempts are exhausted. The accepted attempt and its job are retained; check GitHub and retry when you are ready.',
+  retryUnscheduled: (attempt: number, total: number, at: string) =>
+    `Attempt ${attempt} of ${total} is due no earlier than ${at}, but no automatic wakeup could be registered. Check GitHub and retry delivery yourself.`,
+  cooldown: (at: string) =>
+    `GitHub asked this client to wait until ${at} before sending again. This attempt was not sent; the accepted attempt is retained.`,
+  unsupportedDelay: (at: string) =>
+    `GitHub asked this client to wait until ${at}, which is longer than automatic delivery supports. Nothing was sent and no attempt was scheduled; check GitHub and retry after that time.`,
+  unreadableDelay: 'GitHub asked this client to wait but did not state a usable time. Nothing was sent and no attempt was scheduled; check GitHub and retry later.',
+  scheduleUnavailable: 'Automatic delivery could not be scheduled in this browser. Queued jobs are retained with their deadlines, but they may not resume on their own until scheduling recovers; check GitHub and retry delivery when you need the work saved.',
+  outcomeUnrecorded: 'The result of a delivery attempt, including the wait GitHub asked for, could not be saved in this browser. Nothing further is sent to that destination while this browser is running; the accepted attempt is retained. Check GitHub before retrying.',
+  durability: 'Undelivered work is stored only in this browser profile. Clearing extension storage, removing the extension, or losing this device loses attempts that were never saved to GitHub.',
   intakeFailed: 'Accepted locally - delivery assignment blocked. No upload was started. Refresh the connection and destination, then explicitly select this attempt again.',
   blocked: (detail: string) => `Delivery blocked: ${detail}`,
   target: (owner: string, name: string, branch: string) => `Destination: ${owner}/${name} @ ${branch}`,

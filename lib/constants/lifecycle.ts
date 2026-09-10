@@ -9,7 +9,7 @@ export const LIFECYCLE_TEXT = {
   clientLabel: 'Original public App client ID',
   installationLabel: 'Original installation ID',
   repositoryLabel: 'Original repository ID',
-  reconnect: 'Reconnect GitHub with the original account and App, then select and verify the original installation, repository, and branch before checking GitHub and retrying. Retained jobs do not resume automatically.',
+  reconnect: 'Reconnect GitHub with the original account and App, then select and verify the original installation, repository, and branch. Until that verification, this job stays queued and no scheduled attempt is made.',
   destinationChanged: 'The selected destination does not match the original account, App, installation, repository, or branch for this job. Restore and verify the original destination before checking GitHub and retrying. This job will not be redirected.',
   operationActive: 'A GitHub delivery operation is active. Wait for it to finish, or disconnect GitHub to stop further requests, then refresh before discarding. Requests already issued may still complete.',
   submittedSource: `${PROGRESS_TEXT.submittedSource} (read-only)`,

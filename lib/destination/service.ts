@@ -8,7 +8,7 @@ import { browser, type Browser } from 'wxt/browser';
 import type { GithubService } from '../github/service';
 import { AuthFault, type ConnectedSession } from '../github/schemas';
 import { destinationApi } from './api';
-import { githubResponseStatus, GithubWriteRejected } from '../github/errors';
+import { githubRateLimit, githubResponseStatus, GithubWriteRejected } from '../github/errors';
 import {
   DestinationFault, destinationRequestSchema, journalSchema, type DestinationJournal,
   destinationTargetSchema, sameDestination, type DestinationReply, type DestinationTarget, type DestinationView, type Installation,
@@ -69,6 +69,7 @@ export function createDestinationService(github: GithubService) {
     }
     const status = error instanceof GithubWriteRejected ? error.status : githubResponseStatus(error);
     if (!accessLost && status !== GITHUB_HTTP_STATUS.forbidden && status !== GITHUB_HTTP_STATUS.notFound) return;
+    if (!accessLost && githubRateLimit(error, Date.now()) !== null) return;
     const operation = queue.then(async () => {
       const journal = await readJournal(target.userId);
       if (journal?.connectionId === target.connectionId && journal.operationId === target.operationId) {
