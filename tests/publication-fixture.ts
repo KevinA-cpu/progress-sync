@@ -69,6 +69,10 @@ interface PublicationFixture {
 
 const base = '/repos/fixture-user/progress-solutions';
 const api = `https://api.github.com${base}`;
+const markerPath = '.progress-sync.json';
+const placeholderMarker = JSON.stringify({
+  kind: 'progress-sync', schemaVersion: 1, initializationId: '12345678-1234-4234-8234-123456789abc',
+});
 const initialHead = 'a'.repeat(40);
 const initialTree = 'b'.repeat(40);
 const hash = (value: string) => createHash('sha1').update(value, 'utf8').digest('hex');
@@ -93,9 +97,7 @@ export async function publicationFixture(
     head: initialHead,
     files: new Map([
       ['README.md', 'Keep this learner file.\n'],
-      ['.progress-sync.json', destination.markerContent || JSON.stringify({
-        kind: 'progress-sync', schemaVersion: 1, initializationId: '12345678-1234-4234-8234-123456789abc',
-      })],
+      [markerPath, destination.markerContent || placeholderMarker],
     ]),
     writes: [],
     reads: [],
@@ -154,7 +156,10 @@ export async function publicationFixture(
 
   function startHistory() {
     if (historyStarted) return;
-    // Delay the initial snapshot so collision files can be seeded after onboarding.
+    // Delay the initial snapshot so onboarding's own marker and seeded collision files apply.
+    if (destination.markerContent && server.files.get(markerPath) === placeholderMarker) {
+      server.files.set(markerPath, destination.markerContent);
+    }
     trees.set(initialTree, new Map(server.files));
     historyStarted = true;
   }

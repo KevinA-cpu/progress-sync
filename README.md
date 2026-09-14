@@ -11,9 +11,14 @@ These slices implement [ticket #2](https://github.com/KevinA-cpu/progress-sync/i
 [ticket #6](https://github.com/KevinA-cpu/progress-sync/issues/6),
 [ticket #7](https://github.com/KevinA-cpu/progress-sync/issues/7),
 [ticket #8](https://github.com/KevinA-cpu/progress-sync/issues/8),
+[ticket #9](https://github.com/KevinA-cpu/progress-sync/issues/9),
 [ticket #10](https://github.com/KevinA-cpu/progress-sync/issues/10), and
 [ticket #11](https://github.com/KevinA-cpu/progress-sync/issues/11).
-**Automatic queue draining is not implemented yet.**
+Queued uploads drain automatically; see
+[automatic resumption](#automatic-resumption-of-queued-uploads).
+**A live GitHub run on 2026-09-14 exercised the core journey end to end, but
+three live checks remain unexercised, so the gate is incomplete and v1 is not
+releasable yet.** See [release readiness](#release-readiness).
 
 HDLBits login is not required. The extension's progress is separate from HDLBits'
 official completion state.
@@ -44,6 +49,7 @@ pnpm test -- concurrency.spec.ts
 pnpm test -- lifecycle.spec.ts
 pnpm test -- lifecycle-rebase.spec.ts
 pnpm test -- pending-identity.spec.ts
+pnpm test -- journey.spec.ts
 ```
 
 After a build, tests can be rerun without rebuilding:
@@ -118,8 +124,11 @@ Chromium 120 or newer is required. The currently tested browser version is
 
 ## Configure the GitHub App
 
-The repository deliberately ships with an unconfigured public client ID.
-No App is registered and no credentials are obtained automatically.
+[The bundled configuration](public/github-app.json) carries the maintainer's
+**public client ID** for [the Progress Sync App](https://github.com/settings/apps/progress-sync).
+It holds no secret, and no credentials are obtained automatically. Registering a
+different App for another audience means replacing that value with its own public
+client ID.
 
 1. Register a GitHub App for the intended audience using
    [GitHub's registration instructions](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
@@ -130,12 +139,25 @@ No App is registered and no credentials are obtained automatically.
    access. Administration is ongoing authority, not a create-only permission.
    When installation access is needed, select only intended repositories;
    do not silently grant all-repository access.
-4. Replace `null` in [the bundled configuration](public/github-app.json) with the
-   App's **public client ID**. This is not the numeric App ID, a client secret,
+4. Put the App's **public client ID** in [the bundled configuration](public/github-app.json).
+   This is not the numeric App ID, a client secret,
    private key, password, or personal access token. Never put secrets in that file.
 5. Rebuild and reload the extension. Open its connection tab, choose **Connect
    GitHub**, and use the displayed code at **Open GitHub**. Check the App identity
    and consent information on GitHub before approving.
+
+GitHub's **Only select repositories** installation screen requires at least one
+existing repository, so installation cannot start from an empty account. Create a
+single isolated public bootstrap repository for that purpose — for example
+`progress-sync-app-setup` — and select only it. Leave the intended progress
+repository name uncreated, so the extension's own automatic public creation is
+what creates it; afterwards add that new repository explicitly to the
+installation's selected access. In the 2026-09-14 live run the newly created
+repository was already covered by the selected-repositories installation, so no
+manual widening step was needed; that is not guaranteed, so keep the explicit
+selection step available when access is missing. Never choose
+**All repositories**, never add an existing project, and never widen
+installation authority silently.
 
 The public client ID is maintainer configuration bundled with the extension, not
 something each learner must enter. Missing/invalid configuration produces setup
@@ -205,7 +227,9 @@ repository's stable identity/public visibility, user push permission, and its
 actual branch. It follows installation/repository pagination and never silently
 expands installation access. If a newly created repository is not included,
 use **Manage App installation access**, select that repository on GitHub, and
-choose **Verify pending or saved repository**.
+choose **Verify pending or saved repository**. A repository tab that was already
+open when the GitHub session changed says so and disables its actions: choose
+**Refresh installations** after reconnecting, then verify again.
 
 Pagination calls the typed list methods with an explicit page number, a 100-page
 bound, response validation, and session checks on every request. It does not
@@ -625,7 +649,8 @@ Permissions:
 - `webNavigation`: HDLBits-filtered navigation observations and frame/document
   identity checks. This API permission is broader than the listener filter;
   the extension does not collect browsing history.
-- `alarms`: expire the GitHub session without keeping a page open.
+- `alarms`: expire the GitHub session and re-arm the single `delivery-retry-v1`
+  wakeup for queued uploads, without keeping a page open.
 - Host access: HTTPS HDLBits, `github.com`, and `api.github.com` only. GitHub
   requests originate in privileged extension contexts; there are no GitHub
   content scripts and no all-sites access.
@@ -667,6 +692,97 @@ grading certificate: a compromised provider or browser is outside this proof.
   the device loses them. Resumption also cannot outlast its bounded budget, run
   without a reauthorized original account and a verified original destination, or
   repair a permission, validation, or branch-policy rejection.
+
+## Release readiness
+
+The controlled tests below run the complete learner journey, including a composed
+guest-to-recovery path, against synthetic credentials and controlled GitHub and
+HDLBits responses. Controlled results are neither live compatibility proof nor a
+security certification. **The live gate is incomplete, so v1 is not releasable.**
+
+Tested configuration: Chromium 153.0.8010.12, Playwright 1.63.0, Node.js 22,
+pnpm 10.26.1, on Windows. Other Chromium builds, browsers, and platforms are
+untested. The earlier live guest HDLBits checks recorded under
+[validation](#validation) cover only the observed capture path, not GitHub
+delivery; the 2026-09-14 live run below additionally covers real GitHub
+authorization, repository creation, publication, and recovery.
+
+### Live gate prerequisites
+
+The remaining checks change real GitHub state, so all of the following are
+required before any of them starts:
+
+1. Explicit, current authorization from the account owner for each live run.
+2. A dedicated test repository name on that explicitly authorized account,
+   reserved for this check and holding no work worth keeping. A separate test
+   account is optional, not required; what matters is that the destination is
+   dedicated and that no unrelated repository is exposed.
+3. A registered GitHub App with device flow and expiring user access tokens,
+   repository **Administration: read/write** and **Contents: read/write**, and
+   metadata access, installed on that account with only intended repositories
+   selected.
+4. That App's public client ID in [the bundled configuration](public/github-app.json).
+   A client ID is never guessed or inferred; it comes from the App's own settings
+   page.
+5. Extension credentials obtained only through the extension's own device flow.
+   A host GitHub CLI credential, personal access token, App private key, or client
+   secret is never reused as an extension credential.
+
+### Live gate checklist
+
+Checked items record only what the 2026-09-14 live run actually observed:
+
+- [x] Device authorization completes in a real browser against the registered App.
+- [x] The bundled libraries and the target browser version work together outside
+      the test harness — for this Chromium build only; no other browser, channel,
+      or profile type was exercised.
+- [x] Administration and Contents authority is actually granted and observed.
+- [x] Automatic creation of a public personal repository succeeds.
+- [x] Installation selection and branch initialization behave as documented,
+      with installation access left at selected repositories.
+- [x] An accepted attempt is atomically published to that repository.
+- [x] Guest HDLBits submissions correlate exactly, including post-submit editing
+      and concurrent tabs, with the published source bytes and hash.
+- [x] A fresh browser reauthorizes and recovers that saved progress independently
+      of the old profile's cache, credentials, and guest state.
+- [ ] HDLBits' own native completion state is observed to be unaffected by a live
+      run.
+- [ ] Credential isolation is audited live, against real tokens and cookies.
+- [ ] A live delivery is interrupted mid-publication and recovered.
+
+Status as of 2026-09-14: an authorized live run on the account owner's own
+account, with their explicit approval for this destination, completed the core
+journey against the dedicated public repository
+[KevinA-cpu/progress-sync-live-test](https://github.com/KevinA-cpu/progress-sync-live-test),
+so prerequisites 1–5 were met for that run. The extension itself created that
+public repository and verified its branch; four real guest HDLBits accepted
+submissions were captured across two rounds — different problems, then the same
+problem in two tabs — each round with two submissions pending at once and both
+editors edited after their POSTs. Each attempt produced a distinct saved receipt
+whose commit carries the solution and its metadata together and is absent from
+the receipt's parent tree, confirmed by unauthenticated public reads; a genuinely
+fresh profile then reauthorized and recovered all four records, leaving the
+remote head unchanged. Nothing was deleted.
+
+Three checklist items above remain **not exercised**, and unexercised items are
+not claims: the live run never read HDLBits' native completion state, never
+inspected credentials, cookies, or tokens, and never induced an interruption
+mid-delivery. The driver logged, read, and exported no secret, device code, or
+cookie, but that operating safeguard is not proof of complete credential
+isolation. The controlled tests under [validation](#validation) cover
+comparable native-state, credential-handling, and interruption behavior against
+synthetic credentials; they are not live evidence and not a security
+certification. **The gate therefore remains PARTIAL and incomplete, issue #12
+and its spec stay open, and v1 is still not releasable.**
+The gate stays open until the prerequisites are met and the checklist is
+completed as written: correlation is never weakened, broader repository access or
+broader credentials are never requested, and controlled fixtures are never
+substituted to close a live item.
+
+Completing the gate never requires deleting the test repository, its contents, or
+retained local work. Record the tested browser and extension versions, the items
+actually checked, and the observed limitations. Do not record credentials, device
+codes, repository contents, or unnecessary account or browsing detail.
 
 ## Validation
 
@@ -726,6 +842,35 @@ Recovery tests close the original browser and launch a fresh profile without
 copying local storage or credentials. They reconnect through the real extension
 and controlled GitHub boundary, retaining only the remote repository state.
 
+Journey tests compose the whole path in one run instead of one slice at a time.
+The first captures a guest attempt before any GitHub connection, then authorizes
+through the device flow, creates the public repository automatically, initializes
+its marker and carries that same marker into the published tree and the later
+recovery, verifies the destination, captures and atomically publishes a new
+attempt, publishes the older guest attempt through its explicit destination
+choice, and restores both records in a separately launched browser profile that
+starts with no local state, without touching the new profile's HDLBits editor or
+solved state. The second keeps two tab submissions genuinely in flight, edits both
+editors after their POSTs, returns the two results out of order, loses one
+reference response, forces a rebase with a concurrent remote commit, disconnects
+with a due wakeup that must send nothing, reauthorizes and verifies again, and
+then issues duplicate retries and wakeups. It requires one effective publication
+and one confirmed receipt per attempt — reconciliation and duplicate requests add
+no commit or reference update, and the rebase's abandoned candidate is counted
+rather than ignored — together with the exact original snapshots, distinct capture
+provenance, and unmixed records.
+
+Both journeys check credential handling while connected, after disconnect, and
+after reauthorization: the access token stays in `chrome.storage.session`, and
+synthetic sentinels are absent from published file contents, publication request
+bodies, extension and provider page console output, `chrome.storage.local`,
+`chrome.storage.sync`, and the progress page's own markup. That check does not
+cover IndexedDB, service-worker console output, or arbitrary page messages;
+denied session access from the HDLBits content-script world and rejected page
+messages are covered by the GitHub and concurrency tests instead. A third check
+requires the packaged App configuration to match the bundled source configuration
+exactly and to carry no credential value.
+
 Coverage includes accepted bytes, post-submit edits and hashes, failed and stale
 results, ambiguous layouts and payloads, historical/forged observations,
 timeouts, independent cross-tab publication with out-of-order results, same-frame
@@ -755,8 +900,18 @@ No credentials or GitHub requests were used. This verifies the distinct-tab
 path, not same-frame overlap, other submission modes, or live GitHub delivery.
 Same-frame overlap remains an explicit release limitation.
 
-No live GitHub authorization, App registration, or repository creation was performed.
-A live compatibility check requires a configured App and separate user consent.
+A live GitHub run on 2026-09-14 used extension 0.1.0 with Playwright 1.63.0 and
+Node.js 22 on Windows, driving the same Chromium 153.0.8010.12 build. The
+extension's own device flow authorized a real account with the owner present for
+each consent screen, created the dedicated public repository, published four real
+guest HDLBits attempts, and recovered them in a fresh profile; verification used
+unauthenticated public reads only. Live credential isolation, HDLBits native
+completion state, and mid-delivery interruption were not exercised there — the
+controlled tests above cover those behaviors with synthetic credentials only.
+Every future live run still requires current, explicit account-owner
+authorization and a dedicated destination;
+[release readiness](#release-readiness) lists the prerequisites and the items
+that remain open.
 
 Relevant platform contracts:
 
