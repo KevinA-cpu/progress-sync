@@ -1,5 +1,8 @@
 import { expect, launchExtensionProfile, stopExtensionWorker, submittedBytes, submittedSource, test } from './fixtures';
-import { CLIENT_ID, githubFixture, openConnection } from './github-fixture';
+import {
+  ACCESS_TOKEN, CLIENT_ID, credentialSummary, DEVICE_CODE, githubFixture, indexedDatabaseRecords, openConnection,
+  REFRESH_TOKEN,
+} from './github-fixture';
 import { destinationFixture } from './destination-fixture';
 import { publicationFixture } from './publication-fixture';
 import { recoveryFixture } from './recovery-fixture';
@@ -101,6 +104,87 @@ test('a fresh browser recovers the published source and recorded acceptance with
     expect(remote.requestsValid).toBe(true);
   } finally {
     await fresh.close();
+  }
+});
+
+test('the recovery cache persists records to IndexedDB without any credential reaching that store', async ({
+  extensionContext, progress,
+}) => {
+  const attempt = '11111111-1111-4111-8111-111111111111';
+  const { remote, destination } = await prepareRecovery(extensionContext, progress, savedFiles(attempt));
+  await destination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
+  await expect(progress.getByText('Recorded acceptance from GitHub', { exact: true })).toBeVisible();
+
+  const persisted = JSON.stringify(await indexedDatabaseRecords(progress));
+  expect(persisted).toContain(attempt);
+  expect(persisted).toContain('step_one');
+  expect(await credentialSummary(progress)).toEqual({
+    accessInSession: true, refreshInSession: false, deviceInSession: false, leakedOutsideSession: false,
+  });
+  expect(remote.writes).toBe(0);
+});
+
+const AUDIT_DATABASE = 'credential-audit-fixture';
+
+async function plantRecord(page: Page, value: string): Promise<void> {
+  await page.evaluate(async ([database, planted]) => {
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(database as string, 1);
+      request.onupgradeneeded = () => { request.result.createObjectStore('records'); };
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const opened = request.result;
+        const transaction = opened.transaction(['records'], 'readwrite');
+        transaction.objectStore('records').put({ planted }, 'entry');
+        transaction.onerror = () => { opened.close(); reject(transaction.error); };
+        transaction.oncomplete = () => { opened.close(); resolve(); };
+      };
+    });
+  }, [AUDIT_DATABASE, value]);
+}
+
+async function dropPlantedRecord(page: Page): Promise<void> {
+  await page.evaluate(async database => {
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.deleteDatabase(database);
+      request.onerror = () => reject(request.error);
+      request.onblocked = () => reject(new Error(`Deleting ${database} was blocked.`));
+      request.onsuccess = () => resolve();
+    });
+  }, AUDIT_DATABASE);
+}
+
+for (const planted of [
+  { name: 'an access token', value: ACCESS_TOKEN },
+  { name: 'a refresh token', value: REFRESH_TOKEN },
+  { name: 'a device code', value: DEVICE_CODE },
+]) {
+  test(`the credential audit reports ${planted.name} written to extension-origin IndexedDB`, async ({ progress }) => {
+    expect(await credentialSummary(progress)).toMatchObject({ leakedOutsideSession: false });
+    await plantRecord(progress, planted.value);
+    try {
+      expect(JSON.stringify(await indexedDatabaseRecords(progress))).toContain(planted.value);
+      expect(await credentialSummary(progress)).toMatchObject({ leakedOutsideSession: true });
+    } finally {
+      await dropPlantedRecord(progress);
+    }
+    expect(await credentialSummary(progress)).toMatchObject({ leakedOutsideSession: false });
+  });
+}
+
+test('an unreadable extension-origin database fails the credential audit instead of reporting no records', async ({
+  progress,
+}) => {
+  await plantRecord(progress, 'not a credential');
+  try {
+    await progress.evaluate(() => {
+      IDBObjectStore.prototype.getAll = () => { throw new Error('Simulated IndexedDB read failure.'); };
+    });
+    const outcome = await indexedDatabaseRecords(progress).catch((error: unknown) => error);
+    expect(String(outcome)).toContain('Simulated IndexedDB read failure.');
+  } finally {
+    await progress.reload();
+    await dropPlantedRecord(progress);
   }
 });
 

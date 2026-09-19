@@ -864,8 +864,11 @@ Both journeys check credential handling while connected, after disconnect, and
 after reauthorization: the access token stays in `chrome.storage.session`, and
 synthetic sentinels are absent from published file contents, publication request
 bodies, extension and provider page console output, `chrome.storage.local`,
-`chrome.storage.sync`, and the progress page's own markup. That check does not
-cover IndexedDB, service-worker console output, or arbitrary page messages;
+`chrome.storage.sync`, every extension-origin IndexedDB record, and the progress
+page's own markup. Separate tests plant each sentinel in IndexedDB and require the
+audit to report it, and an unreadable database fails that audit rather than
+counting as clean. That check does not cover service-worker console output or
+arbitrary page messages;
 denied session access from the HDLBits content-script world and rejected page
 messages are covered by the GitHub and concurrency tests instead. A third check
 requires the packaged App configuration to match the bundled source configuration

@@ -141,18 +141,56 @@ export async function advanceUntilPolls(page: Page, server: GithubFixture, count
   }
 }
 
+// Rejects instead of returning nothing, so an unreadable store cannot pass a leak check by omission.
+export async function indexedDatabaseRecords(page: Page): Promise<unknown[]> {
+  const dumps = await page.evaluate(async () => {
+    const databases = await indexedDB.databases();
+    return Promise.all(databases.map(({ name }) => new Promise<unknown[]>((resolve, reject) => {
+      if (name === undefined) throw new Error('An extension-origin database reported no name.');
+      const request = indexedDB.open(name);
+      request.onblocked = () => reject(new Error(`Opening ${name} was blocked.`));
+      request.onerror = () => reject(request.error ?? new Error(`Could not open ${name}.`));
+      request.onsuccess = () => {
+        const database = request.result;
+        const fail = (cause: unknown) => {
+          database.close();
+          reject(cause instanceof Error ? cause : new Error(`Could not read ${name}.`));
+        };
+        try {
+          const stores = [...database.objectStoreNames];
+          if (stores.length === 0) { database.close(); resolve([]); return; }
+          const transaction = database.transaction(stores, 'readonly');
+          const reads = stores.map(store => transaction.objectStore(store).getAll());
+          transaction.onerror = () => fail(transaction.error);
+          transaction.onabort = () => fail(new Error(`Reading ${name} was aborted.`));
+          transaction.oncomplete = () => {
+            database.close();
+            resolve(reads.flatMap(read => read.result as unknown[]));
+          };
+        } catch (cause) {
+          fail(cause);
+        }
+      };
+    })));
+  });
+  return dumps.flat();
+}
+
 export async function credentialSummary(page: Page) {
-  return page.evaluate(async credentials => {
+  const persisted = JSON.stringify(await indexedDatabaseRecords(page));
+  return page.evaluate(async ({ credentials, persisted }) => {
     const [session, local, sync] = await Promise.all([
       chrome.storage.session.get(null), chrome.storage.local.get(null), chrome.storage.sync.get(null),
     ]);
     const sessionText = JSON.stringify(session);
-    const outsideSession = [JSON.stringify(local), JSON.stringify(sync), document.documentElement.outerHTML];
+    const outsideSession = [
+      JSON.stringify(local), JSON.stringify(sync), document.documentElement.outerHTML, persisted,
+    ];
     return {
       accessInSession: sessionText.includes(credentials.access),
       refreshInSession: sessionText.includes(credentials.refresh),
       deviceInSession: sessionText.includes(credentials.device),
       leakedOutsideSession: outsideSession.some(text => Object.values(credentials).some(value => text.includes(value))),
     };
-  }, { access: ACCESS_TOKEN, refresh: REFRESH_TOKEN, device: DEVICE_CODE });
+  }, { credentials: { access: ACCESS_TOKEN, refresh: REFRESH_TOKEN, device: DEVICE_CODE }, persisted });
 }
