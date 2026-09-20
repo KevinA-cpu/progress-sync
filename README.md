@@ -700,9 +700,9 @@ guest-to-recovery path, against synthetic credentials and controlled GitHub and
 HDLBits responses. Controlled results are neither live compatibility proof nor a
 security certification. **The live gate is incomplete, so v1 is not releasable.**
 
-Tested configuration: Chromium 153.0.8010.12, Playwright 1.63.0, Node.js 22,
-pnpm 10.26.1, on Windows. Other Chromium builds, browsers, and platforms are
-untested. The earlier live guest HDLBits checks recorded under
+Tested configuration: Chromium 153.0.8010.12, Playwright 1.63.0, pnpm 10.26.1 on
+Windows, under Node.js 22 and Node.js 24.19.0. Other Chromium builds, browsers,
+and platforms are untested. The earlier live guest HDLBits checks recorded under
 [validation](#validation) cover only the observed capture path, not GitHub
 delivery; the 2026-09-14 live run below additionally covers real GitHub
 authorization, repository creation, publication, and recovery.
@@ -825,11 +825,12 @@ Resumption tests drive the real alarm, storage, and worker lifecycle interfaces
 with controlled browser time and controlled network failures instead of waiting
 out the production schedule. They cover offline-to-online recovery, worker
 termination and re-arming, a real browser restart that waits for reauthorization
-and destination verification, duplicate and overlapping wakeups, an exhausted
-budget, a permanent rejection that is never rescheduled, an attempt reserved but
-never sent before the worker died, a write for one job that must not disturb
-another left mid-publication, and injected alarm and storage failures that must
-be visible and recoverable.
+and destination verification, duplicate and overlapping wakeups that register no
+alarm beyond the two named ones and none for delivery once the queue drains, an
+exhausted budget, a permanent rejection that is never rescheduled, an attempt
+reserved but never sent before the worker died, a write for one job that must not
+disturb another left mid-publication, and injected alarm and storage failures that
+must be visible and recoverable.
 
 Rate-limit tests state deadlines in every form GitHub can use — long whole
 seconds, an HTTP date, and a distant primary-limit reset — and require the
@@ -863,12 +864,18 @@ provenance, and unmixed records.
 Both journeys check credential handling while connected, after disconnect, and
 after reauthorization: the access token stays in `chrome.storage.session`, and
 synthetic sentinels are absent from published file contents, publication request
-bodies, extension and provider page console output, `chrome.storage.local`,
-`chrome.storage.sync`, every extension-origin IndexedDB record, and the progress
-page's own markup. Separate tests plant each sentinel in IndexedDB and require the
-audit to report it, and an unreadable database fails that audit rather than
-counting as clean. That check does not cover service-worker console output or
-arbitrary page messages;
+bodies, `chrome.storage.local`, `chrome.storage.sync`, every extension-origin
+IndexedDB record, the progress page's own markup, and the console output of
+extension pages, provider pages, and the extension service worker. Console capture
+attaches once the worker is running and before the extension can obtain any GitHub
+credential, and runs until the profile closes; output from the worker's first
+moments of startup is therefore outside it. Separate tests plant each sentinel in
+IndexedDB and log one from a page and from the service worker, including a worker
+recreated after termination, and require the audit to report each. Four induced
+IndexedDB failures — an unreadable store, a refused transaction, an unenumerable
+database list, and a transaction aborted mid-read — fail the audit rather than
+counting as clean, and the planted database is deleted afterwards to prove no
+connection was left open. That check does not cover arbitrary page messages;
 denied session access from the HDLBits content-script world and rejected page
 messages are covered by the GitHub and concurrency tests instead. A third check
 requires the packaged App configuration to match the bundled source configuration

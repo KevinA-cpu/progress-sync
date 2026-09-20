@@ -1,4 +1,4 @@
-import { test as base, chromium, type BrowserContext, type Page, type Worker } from '@playwright/test';
+import { expect as check, test as base, chromium, type BrowserContext, type Page, type Worker } from '@playwright/test';
 import { resolve } from 'node:path';
 import { cp, writeFile } from 'node:fs/promises';
 import type { Browser } from 'wxt/browser';
@@ -52,6 +52,23 @@ export async function installProviderRoutes(context: BrowserContext): Promise<vo
   });
 }
 
+// Context console events include service-worker output. Attaching before the first worker starts slows
+// publication measurably, so capture begins once it runs and before GitHub can issue a credential.
+const consoleLines = new WeakMap<BrowserContext, string[]>();
+
+export function captureConsole(context: BrowserContext): void {
+  if (consoleLines.has(context)) return;
+  const lines: string[] = [];
+  consoleLines.set(context, lines);
+  context.on('console', message => { lines.push(message.text()); });
+}
+
+export function consoleOutput(context: BrowserContext): string[] {
+  const lines = consoleLines.get(context);
+  if (!lines) throw new Error('Expected a context prepared with captureConsole before it was used.');
+  return lines;
+}
+
 export async function launchExtensionProfile(extensionPath: string, profilePath: string): Promise<BrowserContext> {
   const context = await chromium.launchPersistentContext(profilePath, {
     channel: 'chromium',
@@ -85,6 +102,7 @@ export const test = base.extend<ExtensionFixtures>({
   progress: async ({ extensionContext }, use) => {
     const worker = extensionContext.serviceWorkers()[0]
       ?? await extensionContext.waitForEvent('serviceworker');
+    captureConsole(extensionContext);
     const page = await extensionContext.newPage();
     await page.goto(`chrome-extension://${new URL(worker.url()).hostname}/options.html`);
     await use(page);
@@ -119,6 +137,11 @@ export async function advanceDeliverySchedule(
   }, { shift, wake, alarm: DELIVERY_RETRY_ALARM });
 }
 
+export async function alarmNames(context: BrowserContext): Promise<string[]> {
+  return extensionWorker(context)
+    .evaluate(async () => (await chrome.alarms.getAll()).map(alarm => alarm.name).sort());
+}
+
 export async function deliveryAlarm(context: BrowserContext): Promise<number | null> {
   return extensionWorker(context).evaluate(async name => {
     const alarm = await chrome.alarms.get(name);
@@ -149,4 +172,14 @@ export async function stopExtensionWorker(context: BrowserContext, page: Page): 
   await session.send('ServiceWorker.stopWorker', { versionId });
   await stopped;
   await session.detach();
+}
+
+// Waking the worker without opening an extension page leaves no view request in flight.
+export async function restartExtensionWorker(
+  context: BrowserContext, page: Page, wake: () => Promise<unknown>,
+): Promise<Worker> {
+  await stopExtensionWorker(context, page);
+  await wake();
+  await check.poll(() => context.serviceWorkers()).toHaveLength(1);
+  return extensionWorker(context);
 }

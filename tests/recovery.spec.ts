@@ -1,4 +1,6 @@
-import { expect, launchExtensionProfile, stopExtensionWorker, submittedBytes, submittedSource, test } from './fixtures';
+import {
+  expect, extensionWorker, launchExtensionProfile, stopExtensionWorker, submittedBytes, submittedSource, test,
+} from './fixtures';
 import {
   ACCESS_TOKEN, CLIENT_ID, credentialSummary, DEVICE_CODE, githubFixture, indexedDatabaseRecords, openConnection,
   REFRESH_TOKEN,
@@ -172,20 +174,88 @@ for (const planted of [
   });
 }
 
-test('an unreadable extension-origin database fails the credential audit instead of reporting no records', async ({
-  progress,
+for (const origin of ['a progress page', 'the extension service worker'] as const) {
+  test(`the credential audit reports an access token logged by ${origin}`, async ({
+    extensionContext, progress,
+  }) => {
+    expect(await credentialSummary(progress)).toMatchObject({ leakedOutsideSession: false });
+    const emit = (token: string) => { console.log(`diagnostic ${token}`); };
+    if (origin === 'a progress page') await progress.evaluate(emit, ACCESS_TOKEN);
+    else await extensionWorker(extensionContext).evaluate(emit, ACCESS_TOKEN);
+    await expect.poll(async () => (await credentialSummary(progress)).leakedOutsideSession).toBe(true);
+  });
+}
+
+test('the credential audit still reads the console of a recreated service worker', async ({
+  extensionContext, progress,
 }) => {
-  await plantRecord(progress, 'not a credential');
-  try {
-    await progress.evaluate(() => {
-      IDBObjectStore.prototype.getAll = () => { throw new Error('Simulated IndexedDB read failure.'); };
+  await stopExtensionWorker(extensionContext, progress);
+  await progress.reload();
+  await expect.poll(() => extensionContext.serviceWorkers()).toHaveLength(1);
+
+  await extensionWorker(extensionContext)
+    .evaluate(token => { console.log(`diagnostic ${token}`); }, REFRESH_TOKEN);
+  await expect.poll(async () => (await credentialSummary(progress)).leakedOutsideSession).toBe(true);
+});
+
+// The first three raise before IndexedDB is involved; the last aborts a live transaction, so the audit fails
+// from a transaction event rather than a synchronous throw. Deleting the planted database before reloading
+// proves each failed read left no connection open.
+for (const failure of [
+  {
+    name: 'a store that cannot be read',
+    expected: 'Simulated IndexedDB failure.',
+    induce: () => { IDBObjectStore.prototype.getAll = () => { throw new Error('Simulated IndexedDB failure.'); }; },
+  },
+  {
+    name: 'a database that refuses transactions',
+    expected: 'Simulated IndexedDB failure.',
+    induce: () => { IDBDatabase.prototype.transaction = () => { throw new Error('Simulated IndexedDB failure.'); }; },
+  },
+  {
+    name: 'a database list that cannot be enumerated',
+    expected: 'Simulated IndexedDB failure.',
+    induce: () => { indexedDB.databases = () => Promise.reject(new Error('Simulated IndexedDB failure.')); },
+  },
+  {
+    name: 'a transaction aborted while reading',
+    expected: 'Could not read credential-audit-fixture.',
+    induce: () => {
+      const getAll = IDBObjectStore.prototype.getAll;
+      IDBObjectStore.prototype.getAll = function (this: IDBObjectStore, ...args: Parameters<typeof getAll>) {
+        const request = getAll.apply(this, args);
+        this.transaction.abort();
+        return request;
+      };
+    },
+  },
+]) {
+  test(`${failure.name} fails the credential audit instead of reporting no records`, async ({ progress }) => {
+    await plantRecord(progress, 'not a credential');
+    try {
+      await progress.evaluate(failure.induce);
+      expect(String(await indexedDatabaseRecords(progress).catch((error: unknown) => error)))
+        .toContain(failure.expected);
+      expect(String(await credentialSummary(progress).catch((error: unknown) => error)))
+        .toContain(failure.expected);
+      await dropPlantedRecord(progress);
+    } finally {
+      await progress.reload();
+    }
+  });
+}
+
+test('an extension-origin database without object stores contributes no records', async ({ progress }) => {
+  await progress.evaluate(async database => {
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open(database, 1);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => { request.result.close(); resolve(); };
     });
-    const outcome = await indexedDatabaseRecords(progress).catch((error: unknown) => error);
-    expect(String(outcome)).toContain('Simulated IndexedDB read failure.');
-  } finally {
-    await progress.reload();
-    await dropPlantedRecord(progress);
-  }
+  }, AUDIT_DATABASE);
+
+  expect(await indexedDatabaseRecords(progress)).toEqual([]);
+  await dropPlantedRecord(progress);
 });
 
 test('truncated recursive results are recovered completely through subtrees on a nonstandard branch', async ({

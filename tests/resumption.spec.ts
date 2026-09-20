@@ -1,9 +1,9 @@
 import type { Browser } from 'wxt/browser';
 import {
-  advanceDeliverySchedule, deliveryAlarm, expect, extensionWorker, launchExtensionProfile, stopExtensionWorker,
-  submittedBytes, submittedSource, test,
+  advanceDeliverySchedule, alarmNames, DELIVERY_RETRY_ALARM, deliveryAlarm, expect, extensionWorker,
+  launchExtensionProfile, stopExtensionWorker, submittedBytes, submittedSource, test,
 } from './fixtures';
-import { CLIENT_ID, credentialSummary, githubFixture, openConnection } from './github-fixture';
+import { AUTH_EXPIRY_ALARM, CLIENT_ID, credentialSummary, githubFixture, openConnection } from './github-fixture';
 import { destinationFixture } from './destination-fixture';
 import { publicationFixture } from './publication-fixture';
 import { setup } from './publication-setup';
@@ -172,9 +172,13 @@ test('duplicate and overlapping wakeups share one serialized publication', async
     await advanceDeliverySchedule(extensionContext, 1000);
     await page.getByRole('button', { name: 'Verify pending or saved repository' }).click();
     await expect(page.getByRole('status')).toContainText('Verified destination:');
+    // Alarms are keyed by name, so repeated wakeups can only accumulate as extra names.
+    expect((await alarmNames(extensionContext)).filter(name => name !== DELIVERY_RETRY_ALARM))
+      .toEqual([AUTH_EXPIRY_ALARM]);
     gate.resolve();
 
     await expect(progress.getByText('Saved to GitHub', { exact: true })).toBeVisible();
+    await expect.poll(() => alarmNames(extensionContext)).toEqual([AUTH_EXPIRY_ALARM]);
     await expect(progress.getByRole('region', { name: 'Captured attempts' }).locator('article')).toHaveCount(1);
     expect((await onlyJob(progress)).receipt?.commitSha).toBe(server.head);
     expect(server.updates).toBe(1);
@@ -234,7 +238,9 @@ test('a repeatedly failing transfer stops at the bounded budget and stays manual
     await advanceDeliverySchedule(extensionContext, delay + 5000);
     await expect.poll(async () => {
       const job = await onlyJob(progress);
-      const running = job.state === 'publishing' || job.state === 'reconciling';
+      // A reservation outlives the brief window where a started attempt already shows its raised count.
+      const running = job.state === 'publishing' || job.state === 'reconciling'
+        || job.retry?.reservedAt != null;
       return running || !job.retry ? 'in flight' : `${job.retry.attempts} ${job.retry.nextAttemptAt === null}`;
     }).toBe(`${attempt} ${attempt === scheduleDelays.length}`);
   }

@@ -1,4 +1,4 @@
-import { expect, stopExtensionWorker, submittedSource, test } from './fixtures';
+import { captureConsole, expect, stopExtensionWorker, submittedSource, test } from './fixtures';
 import { trackContentScript } from './content-script-fixture';
 import {
   ACCESS_TOKEN, CLIENT_ID, DEVICE_CODE, REFRESH_TOKEN, advanceUntilPolls, credentialSummary,
@@ -296,6 +296,7 @@ test('a real browser restart does not restore the GitHub credential', async ({
     await restarted.route('**/*', route => new URL(route.request().url()).protocol === 'chrome-extension:'
       ? route.continue() : route.abort());
     const worker = restarted.serviceWorkers()[0] ?? await restarted.waitForEvent('serviceworker');
+    captureConsole(restarted);
     const page = await restarted.newPage();
     await page.goto(`chrome-extension://${new URL(worker.url()).hostname}/connect.html`);
 

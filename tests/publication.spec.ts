@@ -1,4 +1,6 @@
-import { expect, stopExtensionWorker, submittedBytes, submittedSource, successPage, test } from './fixtures';
+import {
+  expect, restartExtensionWorker, stopExtensionWorker, submittedBytes, submittedSource, successPage, test,
+} from './fixtures';
 import { CLIENT_ID } from './github-fixture';
 import { setup } from './publication-setup';
 import type { Browser } from 'wxt/browser';
@@ -60,8 +62,10 @@ test('disconnect during durable intake does not poison later guest capture', asy
   const { server, connection } = await setup(extensionContext, progress);
   const progressUrl = progress.url();
   await progress.close();
-  const worker = extensionContext.serviceWorkers()[0];
-  if (!worker) throw new Error('Expected the active extension worker.');
+  // Only intake, a progress view and a destination view read the journal, and the connection page reads
+  // neither. With the progress page closed and the worker restarted, no view read can still be running,
+  // so the first journal read after this point is intake reaching its destination selection.
+  const worker = await restartExtensionWorker(extensionContext, connection, () => problem.reload());
   await worker.evaluate(() => {
     const original = chrome.storage.local.get.bind(chrome.storage.local);
     chrome.storage.local.get = new Proxy(original, {

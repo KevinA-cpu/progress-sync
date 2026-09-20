@@ -1,5 +1,6 @@
 import type { BrowserContext, Page } from '@playwright/test';
 import type { Browser } from 'wxt/browser';
+import { captureConsole, consoleOutput } from './fixtures';
 
 declare const chrome: typeof Browser;
 
@@ -7,6 +8,7 @@ export const CLIENT_ID = 'Iv1.progress-sync-fixture';
 export const ACCESS_TOKEN = 'ghu_SYNTHETIC_ACCESS_NOT_REAL';
 export const REFRESH_TOKEN = 'ghr_SYNTHETIC_REFRESH_NOT_REAL';
 export const DEVICE_CODE = 'synthetic-device-code';
+export const AUTH_EXPIRY_ALARM = 'github-connection-expiry';
 
 interface GithubFixture {
   approved: boolean;
@@ -34,6 +36,7 @@ export async function githubFixture(
   context: BrowserContext,
   now: () => Promise<number> = async () => Date.now(),
 ) {
+  captureConsole(context);
   const server: GithubFixture = {
     approved: true,
     deviceError: null,
@@ -53,9 +56,8 @@ export async function githubFixture(
     identityRequests: 0,
     tokenRequestTimes: [],
     requestChecks: [],
-    logs: [],
+    logs: consoleOutput(context),
   };
-  context.on('console', message => { server.logs.push(message.text()); });
   await context.route('https://github.com/**', async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/login/device') {
@@ -178,13 +180,14 @@ export async function indexedDatabaseRecords(page: Page): Promise<unknown[]> {
 
 export async function credentialSummary(page: Page) {
   const persisted = JSON.stringify(await indexedDatabaseRecords(page));
-  return page.evaluate(async ({ credentials, persisted }) => {
+  const logged = consoleOutput(page.context()).join('\n');
+  return page.evaluate(async ({ credentials, persisted, logged }) => {
     const [session, local, sync] = await Promise.all([
       chrome.storage.session.get(null), chrome.storage.local.get(null), chrome.storage.sync.get(null),
     ]);
     const sessionText = JSON.stringify(session);
     const outsideSession = [
-      JSON.stringify(local), JSON.stringify(sync), document.documentElement.outerHTML, persisted,
+      JSON.stringify(local), JSON.stringify(sync), document.documentElement.outerHTML, persisted, logged,
     ];
     return {
       accessInSession: sessionText.includes(credentials.access),
@@ -192,5 +195,5 @@ export async function credentialSummary(page: Page) {
       deviceInSession: sessionText.includes(credentials.device),
       leakedOutsideSession: outsideSession.some(text => Object.values(credentials).some(value => text.includes(value))),
     };
-  }, { credentials: { access: ACCESS_TOKEN, refresh: REFRESH_TOKEN, device: DEVICE_CODE }, persisted });
+  }, { credentials: { access: ACCESS_TOKEN, refresh: REFRESH_TOKEN, device: DEVICE_CODE }, persisted, logged });
 }
