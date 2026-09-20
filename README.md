@@ -16,9 +16,10 @@ These slices implement [ticket #2](https://github.com/KevinA-cpu/progress-sync/i
 [ticket #11](https://github.com/KevinA-cpu/progress-sync/issues/11).
 Queued uploads drain automatically; see
 [automatic resumption](#automatic-resumption-of-queued-uploads).
-**A live GitHub run on 2026-09-14 exercised the core journey end to end, but
-three live checks remain unexercised, so the gate is incomplete and v1 is not
-releasable yet.** See [release readiness](#release-readiness).
+**Live GitHub runs on 2026-09-14 and 2026-09-20 exercised the core journey,
+native provider state, credential isolation, and an interrupted delivery that
+recovered, on one browser build and one account.** See
+[release readiness](#release-readiness).
 
 HDLBits login is not required. The extension's progress is separate from HDLBits'
 official completion state.
@@ -698,14 +699,18 @@ grading certificate: a compromised provider or browser is outside this proof.
 The controlled tests below run the complete learner journey, including a composed
 guest-to-recovery path, against synthetic credentials and controlled GitHub and
 HDLBits responses. Controlled results are neither live compatibility proof nor a
-security certification. **The live gate is incomplete, so v1 is not releasable.**
+security certification. **Every live gate item has now been exercised, on the one
+configuration recorded here and no other.** No packaged release has been
+published from this work.
 
 Tested configuration: Chromium 153.0.8010.12, Playwright 1.63.0, pnpm 10.26.1 on
 Windows, under Node.js 22 and Node.js 24.19.0. Other Chromium builds, browsers,
 and platforms are untested. The earlier live guest HDLBits checks recorded under
 [validation](#validation) cover only the observed capture path, not GitHub
 delivery; the 2026-09-14 live run below additionally covers real GitHub
-authorization, repository creation, publication, and recovery.
+authorization, repository creation, publication, and recovery, and the
+2026-09-20 live run covers native provider state, live credential isolation, and
+an interrupted delivery that recovered.
 
 ### Live gate prerequisites
 
@@ -730,7 +735,8 @@ required before any of them starts:
 
 ### Live gate checklist
 
-Checked items record only what the 2026-09-14 live run actually observed:
+Checked items record only what the 2026-09-14 and 2026-09-20 live runs actually
+observed:
 
 - [x] Device authorization completes in a real browser against the registered App.
 - [x] The bundled libraries and the target browser version work together outside
@@ -745,10 +751,12 @@ Checked items record only what the 2026-09-14 live run actually observed:
       and concurrent tabs, with the published source bytes and hash.
 - [x] A fresh browser reauthorizes and recovers that saved progress independently
       of the old profile's cache, credentials, and guest state.
-- [ ] HDLBits' own native completion state is observed to be unaffected by a live
-      run.
-- [ ] Credential isolation is audited live, against real tokens and cookies.
-- [ ] A live delivery is interrupted mid-publication and recovered.
+- [x] HDLBits' own native completion state is observed to be unaffected by a live
+      run — for the site's own status region for the submitted problem, in this
+      profile only.
+- [x] Credential isolation is audited live, against real tokens and cookies, at
+      four points of one run and across the surfaces listed below.
+- [x] A live delivery is interrupted mid-publication and recovered.
 
 Status as of 2026-09-14: an authorized live run on the account owner's own
 account, with their explicit approval for this destination, completed the core
@@ -764,20 +772,66 @@ the receipt's parent tree, confirmed by unauthenticated public reads; a genuinel
 fresh profile then reauthorized and recovered all four records, leaving the
 remote head unchanged. Nothing was deleted.
 
-Three checklist items above remain **not exercised**, and unexercised items are
-not claims: the live run never read HDLBits' native completion state, never
-inspected credentials, cookies, or tokens, and never induced an interruption
-mid-delivery. The driver logged, read, and exported no secret, device code, or
-cookie, but that operating safeguard is not proof of complete credential
-isolation. The controlled tests under [validation](#validation) cover
-comparable native-state, credential-handling, and interruption behavior against
-synthetic credentials; they are not live evidence and not a security
-certification. **The gate therefore remains PARTIAL and incomplete, issue #12
-and its spec stay open, and v1 is still not releasable.**
-The gate stays open until the prerequisites are met and the checklist is
-completed as written: correlation is never weakened, broader repository access or
-broader credentials are never requested, and controlled fixtures are never
-substituted to close a live item.
+Status as of 2026-09-20: a second authorized live run, 07:54Z to 07:58Z on the
+same dedicated public repository with the account owner approving the extension's
+own device flow twice, closed the three remaining items. The repository held
+10 files at head `818db00` and 14 files at head `abbd5bc` afterwards: exactly two
+new commits adding exactly four paths for the run's two new attempts, each
+receipt commit single-parent and introducing a solution and its metadata
+together. Each published solution blob matched the captured snapshot's bytes and
+hash, and each metadata file carried the matching attempt, provider, problem, and
+source hash. All 10 pre-existing blob hashes were unchanged and nothing was
+deleted.
+
+The second attempt was interrupted deliberately: GitHub answered the real branch
+update with HTTP 200, that response was held before the extension could record
+the outcome, and the service worker was stopped. The stored job was then
+`publishing` with no receipt. Restarting the worker reconciled it to the same
+committed receipt, without resubmitting and without a second commit.
+
+Native provider state was read through the site's own status region for the
+submitted problem (one element, its state-bearing classes and attributes
+included) in a provider page that submitted nothing. The reading taken while the
+committed branch response was still held, with the worker running, was identical
+to the reading taken after the extension recovered and finished publishing, and
+no submission happened between them. That shows the indicator did not change in
+this profile; it is not a statement about other provider states, accounts, or
+browsers. The run used guest HDLBits submissions — no HDLBits site sign-in was
+established, and the progress shown was the profile's own persisted guest
+state — so this is not authenticated-account validation.
+
+Credentials were audited live while connected, after the interruption, after
+disconnect, and after reauthorization. The session store, the allowed credential
+location, was inspected separately at each point and held 1, 1, 0, and 1 token.
+The two token values seen were held in the driver's memory only, never logged or
+written, and compared against 15 guarded surfaces: extension local and
+synchronized storage, extension-origin IndexedDB, extension and provider page
+markup, provider web storage, page-message replies, 6 console events captured
+with page and service-worker monitoring retained across the worker restart, the
+13 packaged extension files, and the 4 new public blobs, plus the non-GitHub
+cookie jar. No credential value and no token-shaped value appeared outside the
+session store, no cookie value was found in extension storage, no refresh token
+was retained, and the console buffer did not overflow. Those are the surfaces
+that were compared, not every surface that exists. The packaged App
+configuration matched the bundled file and carried only a client ID. Cookies on
+the GitHub authorization origin are that site's own traffic and are treated as
+trusted, not as leakage. The public provider page had no external runtime channel
+to the extension, which is an observation about that page, not an
+arbitrary-message penetration audit.
+
+Not covered by either live run: request and response headers and bodies, the
+on-disk browser profile, other extensions, profiles, or browsers, worker console
+output emitted before the observer attached, and any native provider state
+outside the region described above. A local attempt captured in an earlier
+aborted run stayed in its terminal unverified state throughout, was left
+untouched, and is claimed by nothing here. Live results and the controlled tests
+under [validation](#validation) together are still not a security certification.
+The gate's own rules held for both runs: correlation was never weakened, broader
+repository access and broader credentials were never requested, and no controlled
+fixture was substituted for a live item.
+
+Issue #12 tracks this gate. Its parent specification, issue #1, stays open and
+unchanged, as that issue requires.
 
 Completing the gate never requires deleting the test repository, its contents, or
 retained local work. Record the tested browser and extension versions, the items
@@ -916,12 +970,11 @@ extension's own device flow authorized a real account with the owner present for
 each consent screen, created the dedicated public repository, published four real
 guest HDLBits attempts, and recovered them in a fresh profile; verification used
 unauthenticated public reads only. Live credential isolation, HDLBits native
-completion state, and mid-delivery interruption were not exercised there — the
-controlled tests above cover those behaviors with synthetic credentials only.
-Every future live run still requires current, explicit account-owner
-authorization and a dedicated destination;
-[release readiness](#release-readiness) lists the prerequisites and the items
-that remain open.
+completion state, and mid-delivery interruption were not exercised there; a
+second live run on 2026-09-20, same browser build under Node.js 24.19.0, covered
+those three on the same dedicated repository and is recorded under
+[release readiness](#release-readiness). Every future live run still requires
+current, explicit account-owner authorization and a dedicated destination.
 
 Relevant platform contracts:
 
