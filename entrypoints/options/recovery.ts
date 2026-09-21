@@ -3,6 +3,7 @@ import { DOM_EVENT, STORAGE_AREA } from '../../lib/constants/browser';
 import { AUTH_SESSION_KEY } from '../../lib/constants/github';
 import { DESTINATION_STORAGE_PREFIX } from '../../lib/constants/destination';
 import { deliveryCommitUrl, DELIVERY_TEXT } from '../../lib/constants/delivery';
+import { IMPORT_TEXT } from '../../lib/constants/import';
 import { PROGRESS_TEXT } from '../../lib/constants/progress';
 import {
   RECOVERY_ENTRY, RECOVERY_MESSAGE, RECOVERY_MESSAGES, RECOVERY_STATUS, RECOVERY_TEXT,
@@ -28,6 +29,21 @@ function render(entry: RecoveredEntry): HTMLElement {
         [PROGRESS_TEXT.observedLabel]: entry.metadata.observedAt,
       };
       article.append(renderMetadata(values));
+      break;
+    }
+    case RECOVERY_ENTRY.imported: {
+      heading.textContent = PROGRESS_TEXT.problemHeading(entry.metadata.problemId);
+      state.textContent = RECOVERY_TEXT.imported;
+      state.className = 'unverified';
+      article.append(renderMetadata({
+        [IMPORT_TEXT.recordLabel]: entry.metadata.recordId,
+        [IMPORT_TEXT.submissionLabel]: entry.metadata.submissionId,
+        [IMPORT_TEXT.claimLabel]: IMPORT_TEXT.claimValue,
+        [IMPORT_TEXT.labelLabel]: entry.metadata.providerLabel,
+        [IMPORT_TEXT.statusLabel]: String(entry.metadata.providerStatus),
+        [IMPORT_TEXT.hashLabel]: entry.metadata.sourceHash,
+        [IMPORT_TEXT.discoveredLabel]: entry.metadata.discoveredAt,
+      }));
       break;
     }
     case RECOVERY_ENTRY.unverified:
@@ -78,6 +94,7 @@ export function initializeRecovery(): void {
           const items = state.snapshot.entries;
           ui.status.textContent = RECOVERY_TEXT.summary(
             items.filter(item => item.state === RECOVERY_ENTRY.recorded).length,
+            items.filter(item => item.state === RECOVERY_ENTRY.imported).length,
             items.filter(item => item.state === RECOVERY_ENTRY.unverified).length,
           );
           break;

@@ -32,10 +32,18 @@ const metadataPathSegmentsSchema = z.tuple([
 const attemptPathSegmentsSchema = z.tuple([
   z.literal('progress'), z.literal('hdlbits'), z.string().regex(/^[a-z0-9][a-z0-9_]{0,127}$/), z.uuid(),
 ]);
+const importRootSegments = [
+  z.literal('imports'), z.literal('hdlbits'), z.string().regex(/^[a-z0-9][a-z0-9_]{0,127}$/),
+  z.string().regex(/^[0-9]{1,20}$/), z.string().regex(/^[0-9a-f]{12}$/),
+] as const;
+const importRootSegmentsSchema = z.tuple(importRootSegments);
+const importMetadataSegmentsSchema = z.tuple([...importRootSegments, z.literal('import.json')]);
 const historyRequestSchema = z.strictObject({
   sha: shaSchema,
   path: pathSchema.refine(value => metadataPathSegmentsSchema.safeParse(value.split('/')).success
-    || attemptPathSegmentsSchema.safeParse(value.split('/')).success),
+    || attemptPathSegmentsSchema.safeParse(value.split('/')).success
+    || importMetadataSegmentsSchema.safeParse(value.split('/')).success
+    || importRootSegmentsSchema.safeParse(value.split('/')).success),
   per_page: z.literal('100'),
   page: z.string().regex(/^[1-9][0-9]*$/).transform(Number).pipe(z.int().positive()),
 });
@@ -67,8 +75,6 @@ interface PublicationFixture {
   commitFiles(changes: Record<string, string | null>, message?: string): string;
 }
 
-const base = '/repos/fixture-user/progress-solutions';
-const api = `https://api.github.com${base}`;
 const markerPath = '.progress-sync.json';
 const placeholderMarker = JSON.stringify({
   kind: 'progress-sync', schemaVersion: 1, initializationId: '12345678-1234-4234-8234-123456789abc',
@@ -83,10 +89,14 @@ const hasFileDirectoryCollision = (files: ReadonlyMap<string, string>) =>
     return parts.slice(0, -1).some((_, index) => files.has(parts.slice(0, index + 1).join('/')));
   });
 
+// Each instance owns one repository's git store, so a second destination is a genuinely separate remote.
 export async function publicationFixture(
   context: BrowserContext,
   destination: Awaited<ReturnType<typeof destinationFixture>>,
+  repositoryName = 'progress-solutions',
 ) {
+  const base = `/repos/fixture-user/${repositoryName}`;
+  const api = `https://api.github.com${base}`;
   const trees = new Map<string, ReadonlyMap<string, string>>();
   const commits = new Map<string, Commit>([
     [initialHead, { tree: initialTree, parents: [], message: 'Initial learner files' }],
@@ -213,7 +223,7 @@ export async function publicationFixture(
     const gitCommit = commitResponse(sha, commit);
     return {
       sha, url: `${api}/commits/${sha}`,
-      html_url: `https://github.com/fixture-user/progress-solutions/commit/${sha}`,
+      html_url: `https://github.com/fixture-user/${repositoryName}/commit/${sha}`,
       commit: {
         message: gitCommit.message, tree: gitCommit.tree, url: gitCommit.url,
         author: gitCommit.author, committer: gitCommit.committer,

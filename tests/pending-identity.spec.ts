@@ -273,7 +273,7 @@ for (const change of ['repository', 'branch'] as const) {
     expect(changed.selection).toMatchObject({ name: selectedName, branch: selectedBranch, repositoryId: selectedRepositoryId });
     if (!changed.selection) throw new Error('Expected the changed destination to be selected.');
     await expect(progress.getByRole('region', { name: 'Saved progress from GitHub' }).getByText(
-      '0 recorded accepted; 0 unverified saved entries.', { exact: true },
+      '0 recorded accepted; 0 imported unverified; 0 unverified saved entries.', { exact: true },
     )).toBeVisible();
     expect(requests.every(request => request.method === 'GET')).toBe(true);
     const inspected = requests.length;

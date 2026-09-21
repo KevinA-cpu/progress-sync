@@ -1,11 +1,13 @@
 import { expect, type BrowserContext, type Page } from '@playwright/test';
 import { githubFixture, openConnection } from './github-fixture';
-import { destinationFixture } from './destination-fixture';
+import { destinationFixture, type AlternateRepository } from './destination-fixture';
 import { publicationFixture } from './publication-fixture';
 
-export async function setup(context: BrowserContext, progress: Page) {
+export async function setup(
+  context: BrowserContext, progress: Page, alternate: AlternateRepository | null = null,
+) {
   const auth = await githubFixture(context);
-  const target = await destinationFixture(context);
+  const target = await destinationFixture(context, alternate);
   const server = await publicationFixture(context, target);
   const connection = await openConnection(context, progress);
   await connection.getByRole('button', { name: 'Connect GitHub', exact: true }).click();

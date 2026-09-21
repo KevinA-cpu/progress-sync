@@ -4,8 +4,10 @@ import {
   MAX_METADATA_BYTES, MAX_TREE_ENTRIES,
 } from '../constants/delivery';
 import { CAPTURE_PROVENANCE, CAPTURE_STATE, GRADING_VERDICT, PROGRESS_PROVIDER } from '../constants/progress';
-import { attemptSchema, problemIdSchema, submittedSourceSchema } from '../progress';
+import { attemptSchema, problemIdSchema, sourceHashSchema, submittedSourceSchema } from '../progress';
 import { destinationTargetSchema } from '../destination/schemas';
+import { IMPORT_SNAPSHOT_KIND } from '../constants/import';
+import { importedSnapshotSchema, type ImportedSnapshot } from '../import/schemas';
 import { GITHUB_COMPARISON, GITHUB_CONTENT, GITHUB_PAGINATION, githubBase64CharacterLimit } from '../constants/github';
 
 export const gitShaSchema = z.string().regex(/^[a-f0-9]{40}$/);
@@ -14,11 +16,18 @@ export const metadataBlobSchema = z.object({
   sha: gitShaSchema, size: z.int().nonnegative().max(MAX_METADATA_BYTES), encoding: z.literal(GITHUB_CONTENT.base64),
   content: z.string().max(githubBase64CharacterLimit(MAX_METADATA_BYTES)),
 });
-export const sourceHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+export { sourceHashSchema };
 export const acceptedSnapshotSchema = attemptSchema.safeExtend({
   state: z.literal(CAPTURE_STATE.accepted), problemId: problemIdSchema, source: submittedSourceSchema,
   sourceHash: sourceHashSchema, observedAt: z.iso.datetime(),
 });
+export type AcceptedSnapshot = z.infer<typeof acceptedSnapshotSchema>;
+// Imports ride the same publication transport but keep their own snapshot shape and metadata.
+export const deliverySnapshotSchema = z.union([acceptedSnapshotSchema, importedSnapshotSchema]);
+export type DeliverySnapshot = z.infer<typeof deliverySnapshotSchema>;
+export function isImportedSnapshot(snapshot: DeliverySnapshot): snapshot is ImportedSnapshot {
+  return 'kind' in snapshot && snapshot.kind === IMPORT_SNAPSHOT_KIND;
+}
 export const acceptanceRecordSchema = z.strictObject({
   schemaVersion: z.literal(1), provider: z.literal(PROGRESS_PROVIDER), problemId: problemIdSchema,
   attemptId: z.uuid(), sourceHash: sourceHashSchema,
@@ -45,7 +54,7 @@ export const scheduleHealthSchema = z.strictObject({
 });
 export type ScheduleHealth = z.infer<typeof scheduleHealthSchema>;
 export const deliveryJobSchema = z.strictObject({
-  schemaVersion: z.literal(1), id: z.uuid(), snapshot: acceptedSnapshotSchema, target: destinationTargetSchema,
+  schemaVersion: z.literal(1), id: z.uuid(), snapshot: deliverySnapshotSchema, target: destinationTargetSchema,
   createdAt: z.iso.datetime(), state: z.enum(DELIVERY_STATE), detail: z.string().nullable(),
   receipt: deliveryReceiptSchema.nullable(),
   candidate: publicationCandidateSchema.nullable().optional(),
@@ -57,6 +66,12 @@ export const deliveryJobSchema = z.strictObject({
 export const deliveryJobsSchema = z.array(deliveryJobSchema)
   .refine(jobs => new Set(jobs.map(job => job.id)).size === jobs.length);
 export type DeliveryJob = z.infer<typeof deliveryJobSchema>;
+export function importedJobSnapshot(job: DeliveryJob): ImportedSnapshot | null {
+  return isImportedSnapshot(job.snapshot) ? job.snapshot : null;
+}
+export function acceptedJobSnapshot(job: DeliveryJob): AcceptedSnapshot | null {
+  return isImportedSnapshot(job.snapshot) ? null : job.snapshot;
+}
 export const publishRequestSchema = z.strictObject({
   type: z.literal(DELIVERY_MESSAGE.publish), attemptId: z.uuid(), expectedConnectionId: z.uuid(),
   expectedSelectionId: z.uuid(), publicConfirmed: z.literal(true),
@@ -78,7 +93,7 @@ export const deliveryRequestSchema = z.discriminatedUnion('type', [
 export const deliveryReplySchema = z.discriminatedUnion('ok', [
   z.strictObject({
     ok: z.literal(true), jobs: deliveryJobsSchema, selection: destinationTargetSchema.nullable(),
-    scheduling: scheduleHealthSchema.nullable(),
+    scheduling: scheduleHealthSchema.nullable(), discarded: discardedDeliveryIdsSchema,
   }),
   z.strictObject({ ok: z.literal(false), error: z.string() }),
 ]);

@@ -6,8 +6,13 @@ import {
   DELIVERY_TEXT, DELIVERY_THROTTLE_KEY, DISCARDED_DELIVERY_KEY,
 } from '../constants/delivery';
 import { PROGRESS_KEY } from '../constants/progress';
+import { IMPORT_SNAPSHOT_KIND, IMPORT_TEXT } from '../constants/import';
+import {
+  importedSnapshotSchema, importJobId, importRecordId, type ImportCandidate, type ImportedSnapshot,
+  type ImportPublishRequest,
+} from '../import/schemas';
 import { AUTH_ISSUE } from '../constants/github';
-import { attemptListSchema, hashSource, readAttempts, type Attempt } from '../progress';
+import { attemptListSchema, hashSource, readAttempts, sourceByteLength, type Attempt } from '../progress';
 import { AuthFault } from '../github/schemas';
 import type { GithubService } from '../github/service';
 import { DestinationFault, sameDestination, type DestinationTarget } from '../destination/schemas';
@@ -17,6 +22,7 @@ import { publishAttempt, reconcileAttempt } from './api';
 import { classifyDeliveryFailure, nextDeliveryAttempt, rateLimitNotBefore, resumeAfterReservation } from './retry';
 import {
   acceptedSnapshotSchema, DeliveryBlocked, DeliveryFault, deliveryJobsSchema, deliveryRequestSchema,
+  importedJobSnapshot,
   deliveryThrottleSchema, discardedDeliveryIdsSchema, parseDelivery, scheduleHealthSchema, type DeliveryJob,
   type DeliveryReply, type PublicationCandidate, type PublishRequest, type ScheduleHealth,
 } from './schemas';
@@ -184,6 +190,60 @@ export function createDeliveryService(
       throw error;
     }
   }
+  // An import identity plus its destination fixes the job id, so republishing the same bytes adds no second job.
+  async function assignImport(candidate: ImportCandidate, confirmation: ImportPublishRequest): Promise<DeliveryJob | null> {
+    if (await hashSource(candidate.source) !== candidate.sourceHash
+      || sourceByteLength(candidate.source) !== candidate.sourceBytes
+      || await importRecordId(candidate) !== candidate.recordId) {
+      throw new DeliveryFault(IMPORT_TEXT.invalidImport);
+    }
+    try {
+      return await github.withConnection(async (session, guard) => {
+        const target = await destination.selection(session);
+        if (confirmation.expectedConnectionId !== target.connectionId
+          || confirmation.expectedSelectionId !== target.operationId) {
+          throw new DeliveryFault(DELIVERY_TEXT.sessionChanged);
+        }
+        const id = await importJobId(candidate.recordId, target);
+        if (discarding.has(id) || (await discardedIds()).includes(id)) throw new DeliveryFault(DELIVERY_TEXT.discarded);
+        if ((await storedJobs()).some(job => job.id === id)) return null;
+        const job: DeliveryJob = {
+          schemaVersion: 1, id, target, createdAt: new Date().toISOString(),
+          snapshot: parseDelivery(
+            { ...candidate, kind: IMPORT_SNAPSHOT_KIND, id }, importedSnapshotSchema, IMPORT_TEXT.invalidImport,
+          ),
+          state: DELIVERY_STATE.pending, detail: null, receipt: null, candidate: null,
+        };
+        await guard();
+        await save(job);
+        return job;
+      });
+    } catch (error) {
+      if ((error instanceof AuthFault && error.issue === AUTH_ISSUE.notConnected)
+        || (error instanceof DestinationFault && error.issue === DESTINATION_ISSUE.selectionRequired)) {
+        throw new DeliveryFault(IMPORT_TEXT.noDestination);
+      }
+      throw error;
+    }
+  }
+  // The snapshot a job already holds is the immutable copy of an imported record; a later preview cannot alter it.
+  async function importedSnapshot(recordId: string): Promise<ImportedSnapshot | null> {
+    for (const job of await storedJobs()) {
+      const snapshot = importedJobSnapshot(job);
+      if (snapshot?.recordId === recordId) return snapshot;
+    }
+    return null;
+  }
+  async function publishImport(candidate: ImportCandidate, request: ImportPublishRequest): Promise<void> {
+    const operation = intakeQueue.then(() => assignImport(candidate, request));
+    intakeQueue = operation.then(() => undefined, () => undefined);
+    const job = await operation;
+    if (!job) throw new DeliveryFault(IMPORT_TEXT.duplicate);
+    await enqueue(job.id, {
+      expectedConnectionId: request.expectedConnectionId, expectedSelectionId: request.expectedSelectionId,
+      reconcile: false, automatic: false,
+    });
+  }
   async function publish(job: DeliveryJob, attempt?: DeliveryAttempt): Promise<void> {
     if (job.state === DELIVERY_STATE.saved) return;
     const discarded = await discardedIds();
@@ -218,7 +278,9 @@ export function createDeliveryService(
           await destination.guardSelection(session, current);
         }
         if (await hashSource(job.snapshot.source) !== job.snapshot.sourceHash) {
-          throw new DeliveryBlocked(DELIVERY_TEXT.invalidAttempt);
+          throw new DeliveryBlocked(
+            importedJobSnapshot(job) ? IMPORT_TEXT.invalidImport : DELIVERY_TEXT.invalidAttempt,
+          );
         }
         const hooks = {
           async beforeWrite() {
@@ -440,7 +502,10 @@ export function createDeliveryService(
     } catch {
       health = { schemaVersion: 1, failedAt: new Date().toISOString(), detail: DELIVERY_TEXT.scheduleUnavailable };
     }
-    return { ok: true, jobs: await jobs(), selection: await selectedTarget(), scheduling: health };
+    return {
+      ok: true, jobs: await jobs(), selection: await selectedTarget(), scheduling: health,
+      discarded: await discardedIds(),
+    };
   }
   async function discard(jobId: string): Promise<void> {
     if (active.has(jobId) || discarding.has(jobId)) throw new DeliveryFault(DELIVERY_TEXT.discardActive);
@@ -504,5 +569,5 @@ export function createDeliveryService(
         : error instanceof AuthFault ? DELIVERY_TEXT.sessionChanged : DELIVERY_TEXT.operationFailed };
     }
   }
-  return { accepted, message, alarm, resume };
+  return { accepted, message, alarm, resume, publishImport, importedSnapshot };
 }

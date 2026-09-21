@@ -6,9 +6,9 @@ import { browser } from 'wxt/browser';
 import { z } from './schema';
 
 export const problemIdSchema = z.string().regex(/^[a-z0-9][a-z0-9_]{0,127}$/);
+export const sourceHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const submittedSourceSchema = z.string().min(1).refine(
-  source => source.length <= MAX_SOURCE_BYTES
-    && new TextEncoder().encode(source).length <= MAX_SOURCE_BYTES,
+  source => source.length <= MAX_SOURCE_BYTES && sourceByteLength(source) <= MAX_SOURCE_BYTES,
   { error: PROGRESS_TEXT.sourceTooLarge },
 );
 export const submittedSourceFieldSchema = z.tuple([submittedSourceSchema]);
@@ -20,7 +20,7 @@ export const attemptSchema = z.strictObject({
   provider: z.literal(PROGRESS_PROVIDER),
   problemId: problemIdSchema.nullable(),
   source: submittedSourceSchema.nullable(),
-  sourceHash: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+  sourceHash: sourceHashSchema.nullable(),
   submittedAt: z.iso.datetime(),
   observedAt: z.iso.datetime().nullable(),
   state: z.enum(CAPTURE_STATE),
@@ -67,6 +67,10 @@ export async function readAttempts(): Promise<Attempt[]> {
     throw new Error(PROGRESS_TEXT.invalidStoredData);
   }
   return parsed.data;
+}
+
+export function sourceByteLength(source: string): number {
+  return new TextEncoder().encode(source).length;
 }
 
 export async function hashSource(source: string): Promise<string> {

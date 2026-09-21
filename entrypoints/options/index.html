@@ -36,6 +36,26 @@
       <button id="refresh" type="button">Refresh progress</button>
       <p id="status" role="status">Loading local progress...</p>
       <section id="attempts" aria-label="Captured attempts"></section>
+      <section aria-label="Earlier HDLBits solutions">
+        <h2>Earlier HDLBits solutions</h2>
+        <p>Solutions finished before Progress Sync was installed can be imported from HDLBits' own
+          “Load a previous submission” control, without resubmitting them. That control offers only the last
+          successful stored submission per problem, and only where the page has one; a solved badge on its own is
+          not a source of code.</p>
+        <p>Imports are recorded and published as <strong>unverified</strong> — HDLBits' stored copy and the site's
+          own claim, not an acceptance Progress Sync observed. Source is taken only from a load HDLBits reports as
+          successful; any other status is listed as a skipped problem, with the value kept as provenance. Imported
+          records live under a separate <code>imports/</code> path and are never read back as accepted captures.</p>
+        <p>Discovery reads through an HDLBits problem page you already have open, using whatever site session this
+          browser already has. It never opens or navigates a page, never touches your editor contents or HDLBits'
+          native solved state, and never sends site cookies to GitHub. Nothing is published until you confirm each
+          import individually. One pass reads up to 100 solved problems and 2 MB of source; if the page lists more,
+          the status line says how far it got and finding earlier solutions again continues from there.</p>
+        <button id="discover-imports" type="button">Find earlier solutions</button>
+        <button id="cancel-imports" type="button" disabled>Cancel discovery</button>
+        <p id="import-status" aria-live="polite">Loading imports...</p>
+        <div id="imports"></div>
+      </section>
       <section aria-label="Saved progress from GitHub">
         <h2>Saved progress from GitHub</h2>
         <p>Recorded acceptance belongs to the saved source snapshot, not your current editor contents

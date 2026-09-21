@@ -531,7 +531,7 @@ test('publication rechecks permissions and repository identity after onboarding'
   await page.getByRole('button', { name: 'Verify pending or saved repository' }).click();
   await expect(page.getByRole('status')).toContainText('Verified destination:');
   await expect(progress.getByRole('region', { name: 'Saved progress from GitHub' })
-    .getByText('0 recorded accepted; 0 unverified saved entries.', { exact: true })).toBeVisible();
+    .getByText('0 recorded accepted; 0 imported unverified; 0 unverified saved entries.', { exact: true })).toBeVisible();
   target.repositoryId = 202;
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(progress.getByText('Delivery blocked: The repository identity, owner, or visibility changed.', { exact: false })).toBeVisible();

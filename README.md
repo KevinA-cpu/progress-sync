@@ -533,6 +533,79 @@ Local disconnect is also not GitHub-side revocation. Use GitHub settings to
 or [manage installed GitHub Apps and repository access](https://github.com/settings/installations).
 GitHub website login alone grants no API authority to the extension.
 
+## Import earlier HDLBits solutions
+
+Solutions finished before Progress Sync was installed can be imported without
+resubmitting them. **Find earlier solutions** on the progress page reads HDLBits'
+own *Load a previous submission* control through a problem page you already have
+open, using your existing site session.
+
+Imports are recorded and published as **unverified**. They are HDLBits' stored
+copy plus the site's own `Last success` claim, not an acceptance this extension
+observed. A historical solved badge is not evidence of acceptance and is not a
+source of code: a problem marked solved whose page offers no stored submission is
+reported as skipped, never as an import. Source is read only from a load the site
+itself reports as successful — its own handler treats status `2` as the stored
+submission and every other status as a failure carrying an error string. Any
+other status is a skipped problem, and the value is still recorded verbatim as
+`providerStatus` provenance, never as a verdict. Availability is also decided by
+the site's own record of that problem and by validating the returned payload's
+shape, encoding, and size. The problem page serves that control empty and fills
+it from an inline list of its own stored submissions, so the fetched page is
+parsed detached and that list is read as text; no fetched script is ever run, and
+a page whose own entry states no stored success is skipped.
+
+Discovery is sequential and bounded, reports per-problem progress, and can be
+cancelled; a cancelled or interrupted scan keeps whatever it already found and
+says so. Each provider read has its own deadline and is dropped once it exceeds
+its size budget, so a stalled or oversized response ends that problem instead of
+the pass. Per-problem failures — an unreachable page, no stored success, an
+unaddressable submission option, a load error, a rejected load status, a
+malformed or oversized payload, a signed-out session, or an exhausted budget —
+are listed individually rather than dropped.
+
+One pass reads at most 100 solved problems and 2 MB of source. When the page
+lists more than that, the status line reports how many of the listed problems
+were read, and finding earlier solutions again continues from that point rather
+than restarting or silently hiding the rest. A pass that fills the preview limit
+says so instead of reporting a completed scan, and the next pass starts a new
+preview list at the first problem it did not read. Nothing is published by
+discovery: each import needs its own explicit confirmation of the public
+destination. A discovery still running when the worker stops is reported as
+interrupted, not resumed.
+
+Discovery never opens or navigates a tab, never writes to the editor, and never
+changes HDLBits' native completion state. Fetched markup is parsed detached from
+the page, so nothing in it runs. Reads are same-origin requests. The site
+canonicalizes a wiki path's case with a redirect, so a page read follows
+redirects; the request mode makes any hop off the site's origin a network error,
+and the page is used only when the final URL is still the problem that was asked
+for. No limit on the number of same-origin hops is claimed or enforced — the
+final URL is what decides. The load endpoint refuses redirects outright. Site
+cookies stay with the site: they are not
+read by the extension, exported, or sent to GitHub, and no site credential is
+persisted. GitHub credentials are never sent to HDLBits or to content scripts.
+
+Imported records are published under a separate `imports/` path, with their own
+`import.json` metadata that pins `verified: false` and carries no verdict field.
+They cannot be parsed as accepted captures, and `acceptance.json` is still only
+read under `progress/`. Publication reuses the same immutable Git transport,
+idempotency, reconciliation, backoff, and account binding as accepted records,
+including **Check GitHub and retry delivery** and **Discard local attempt**.
+
+A record's identity is its provider, problem, submission ID, and source hash, so
+importing the same bytes again produces no second record and no second commit for
+the same destination. Rediscovering the same solution in another browser profile
+and publishing it to the same destination recognises the record already there:
+the first record's provenance is kept, its original commit is reported as the
+receipt, and nothing is written. A remote `import.json` that does not match that
+identity blocks instead of being overwritten. If HDLBits returns different bytes
+under the same submission identity, that is a distinct record at a distinct path:
+nothing is overwritten and nothing is silently called a duplicate. Each
+destination keeps its own job and its own confirmation; changing the GitHub
+account or destination invalidates a previewed selection rather than redirecting
+an existing record.
+
 ## Recover saved progress
 
 In a fresh browser, connect GitHub and explicitly choose **Connect existing
@@ -554,6 +627,13 @@ Malformed or unsupported metadata, missing source, invalid encoding, and source
 hash mismatches also produce warnings instead of accepted progress. Imported
 source and metadata are never executed, and remote fields cannot select another
 account, repository, branch, URL, or privileged operation.
+
+Records under `imports/` are recovered as their own imported-unverified state,
+validated against the import schema, the path-to-identity association, the source
+hash, the recorded byte count, and the record identity derived from the recovered
+source. They stay unverified whatever their metadata claims: an edited file
+asserting acceptance, a verdict, or a different state is rejected rather than
+promoted, and an `import.json` placed under `progress/` is not read as acceptance.
 
 Recovered progress is displayed separately from locally captured submissions.
 Its snapshot link identifies the commit that was read, not necessarily the
@@ -657,7 +737,12 @@ Permissions:
   content scripts and no all-sites access.
 
 Basic tab lifecycle events are used only to invalidate the tracked authorization
-owner when its tab closes, reloads, or is discarded; browsing history is not stored.
+owner when its tab closes, reloads, or is discarded, and to forget a closed
+HDLBits problem page that had announced itself for imports; browsing history is
+not stored. Import discovery addresses only pages that announced themselves from
+the HDLBits origin at a valid problem URL, and each scan is bound to that tab and
+document, so a navigated, replaced, or closed page cannot continue one. That list
+holds tab and document identifiers only, in session storage, not on disk.
 
 Page messages cannot select arbitrary operations or retrieve the progress
 store. The result observer does not bridge `window.postMessage` into extension
@@ -688,6 +773,21 @@ grading certificate: a compromised provider or browser is outside this proof.
   promote it afterward. Accepted records survive page reload and worker restart.
 - Existing source without valid acceptance metadata can only be shown as
   unverified. Unsaved guest history cannot be reconstructed.
+- Importing earlier solutions reaches only HDLBits' last successful stored
+  submission per problem, because that is all the site's own load control
+  exposes. Earlier versions of a solution, non-success submissions, current
+  drafts, and the static editor starter template are out of reach and are never
+  imported. Problems whose page offers no stored success yield nothing, however
+  they are badged.
+- Imports are always unverified and can never become accepted records. A load is
+  read as source only when the site reports its own success status and the
+  payload validates; any other status is a skipped problem. Imports need an open
+  HDLBits problem page and whatever site session this browser already has,
+  including a guest one with stored submissions; discovery does not open, sign
+  in to, or navigate anything for you.
+- One discovery pass covers at most 100 solved problems and 2 MB of source, and
+  a page listing more than 2000 solved problems is not enumerated at all.
+  Continuing a longer list takes repeated passes.
 - Automatic resumption is local durability only. Undelivered jobs live in this
   browser profile; clearing extension storage, removing the extension, or losing
   the device loses them. Resumption also cannot outlast its bounded budget, run
@@ -975,6 +1075,26 @@ second live run on 2026-09-20, same browser build under Node.js 24.19.0, covered
 those three on the same dedicated repository and is recorded under
 [release readiness](#release-readiness). Every future live run still requires
 current, explicit account-owner authorization and a dedicated destination.
+
+Importing earlier solutions was additionally checked against the real provider on
+2026-09-21, read-only and with no GitHub involvement: no device flow, no publish,
+no submission, no remote write. Discovery and preview ran from the options page in
+the dedicated profile over the account owner's existing HDLBits session. Five
+consecutive problems previewed, each labelled imported-unverified with the site's
+own last-success claim and a load the site reported as status `2`; the open
+problem page kept its editor contents, its native solved indicator, and its URL.
+That check found two provider mismatches fixture pages had hidden — the site
+canonicalizes a wiki path's case with a redirect, and it fills the previous
+submission control from an inline list rather than serving it populated — both of
+which are now part of the adapter and its fixtures.
+
+Redirect handling is covered outside the extension fixture, because Playwright
+does not re-intercept the hop a fulfilled redirect generates. Two local
+`node:http` servers and a plain browser page issue the adapter's exact page-read
+options: a same-origin case canonicalization is followed to its final URL, a hop
+to another origin fails outright, and a same-origin hop to another problem still
+returns a page, so only the final-URL check rejects it. That check is tested
+directly over constructed URLs. No external site is contacted.
 
 Relevant platform contracts:
 

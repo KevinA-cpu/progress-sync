@@ -1,5 +1,6 @@
 import { z } from '../schema';
 import { DELIVERY_PATH, GIT_MODE, GIT_OBJECT, GIT_RECURSIVE, MAX_METADATA_BYTES, deliveryPaths, deliveryRoot } from '../constants/delivery';
+import { IMPORT_PATH, importPaths, importRoot } from '../constants/import';
 import { MAX_SOURCE_BYTES } from '../constants/progress';
 import {
   RECOVERY_ENTRY, RECOVERY_ISSUE, RECOVERY_SOURCE_SUFFIX, RECOVERY_TEXT,
@@ -10,7 +11,8 @@ import { githubRest } from '../github/rest';
 import { decodeGitBlob, InvalidRemoteFile } from '../github/blob';
 import type { ConnectedSession } from '../github/schemas';
 import { acceptanceRecordSchema, gitCommitSchema } from '../delivery/schemas';
-import { hashSource, submittedSourceSchema } from '../progress';
+import { importRecordId, importRecordSchema } from '../import/schemas';
+import { hashSource, sourceByteLength, submittedSourceSchema } from '../progress';
 import {
   parseRecovery, RecoveryFault, remoteBlobSchema, remotePathSchema, remoteTreeSchema,
   type RecoveredEntry, type RecoveryIssue, type RemoteTreeEntry,
@@ -113,6 +115,43 @@ export async function recoverProgress(
     }
     if (!issue && source !== null && metadata.success) {
       entries.push({ state: RECOVERY_ENTRY.recorded, path: file.path, source, metadata: metadata.data });
+    } else {
+      entries.push({
+        state: RECOVERY_ENTRY.unverified, path: file.path, source, issue: issue ?? RECOVERY_ISSUE.metadataInvalid,
+      });
+    }
+  }
+  // Import records are only read under their own root, so an import.json under progress/ never becomes an acceptance.
+  const importFiles = [...files.values()].filter(entry =>
+    entry.path.startsWith(`${IMPORT_PATH.root}/`) && entry.path.endsWith(`/${IMPORT_PATH.metadata}`));
+  for (const file of importFiles) {
+    const root = file.path.slice(0, -(IMPORT_PATH.metadata.length + 1));
+    const sourcePath = importPaths(root).source;
+    consumed.add(sourcePath);
+    const recovered = await readSource(files.get(sourcePath));
+    const source = recovered.source;
+    let issue = recovered.issue;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await text(file, MAX_METADATA_BYTES));
+    } catch (error) {
+      if (!(error instanceof InvalidRemoteFile) && !(error instanceof SyntaxError)) throw error;
+      issue = RECOVERY_ISSUE.metadataInvalid;
+    }
+    const metadata = importRecordSchema.safeParse(raw);
+    if (!metadata.success) issue = RECOVERY_ISSUE.metadataInvalid;
+    else if (root !== importRoot(
+      metadata.data.provider, metadata.data.problemId, metadata.data.submissionId, metadata.data.sourceHash,
+    )) issue = RECOVERY_ISSUE.identityMismatch;
+    else if (source !== null && await hashSource(source) !== metadata.data.sourceHash) {
+      issue = RECOVERY_ISSUE.hashMismatch;
+    // Byte count and record id are derived from the source here, so forged values cannot become an import.
+    } else if (source !== null && (sourceByteLength(source) !== metadata.data.sourceBytes
+      || await importRecordId(metadata.data) !== metadata.data.recordId)) {
+      issue = RECOVERY_ISSUE.recordMismatch;
+    }
+    if (!issue && source !== null && metadata.success) {
+      entries.push({ state: RECOVERY_ENTRY.imported, path: file.path, source, metadata: metadata.data });
     } else {
       entries.push({
         state: RECOVERY_ENTRY.unverified, path: file.path, source, issue: issue ?? RECOVERY_ISSUE.metadataInvalid,

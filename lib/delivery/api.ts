@@ -3,7 +3,10 @@ import {
   DELIVERY_TEXT, GIT_BLOB_HASH_ALGORITHM, GIT_MODE, GIT_OBJECT, GIT_RECURSIVE, MAX_METADATA_BYTES, MAX_PUBLICATION_REBASES,
   deliveryPaths, deliveryRef, deliveryRoot,
 } from '../constants/delivery';
-import { GRADING_VERDICT } from '../constants/progress';
+import { GRADING_VERDICT, HDL_ORIGIN } from '../constants/progress';
+import { IMPORT_PROVENANCE, IMPORT_TEXT, importPaths, importRoot } from '../constants/import';
+import { importJobId, importRecordId, importRecordSchema, type ImportRecord } from '../import/schemas';
+import { hashSource, sourceByteLength } from '../progress';
 import { GITHUB_COMPARISON, GITHUB_HTTP_STATUS, GITHUB_PAGINATION } from '../constants/github';
 import { destinationApi } from '../destination/api';
 import { githubRest } from '../github/rest';
@@ -12,7 +15,8 @@ import { decodeGitBlob, InvalidRemoteFile } from '../github/blob';
 import type { ConnectedSession } from '../github/schemas';
 import {
   acceptanceRecordSchema, DeliveryBlocked, DeliveryFault, gitCommitSchema, gitComparisonSchema, gitObjectSchema,
-  gitRefSchema, gitTreeSchema, metadataBlobSchema, pathCommitsSchema, parseDelivery, type DeliveryJob, type PublicationCandidate,
+  gitRefSchema, gitTreeSchema, isImportedSnapshot, metadataBlobSchema, pathCommitsSchema, parseDelivery,
+  type DeliveryJob, type PublicationCandidate,
 } from './schemas';
 
 type GitTree = z.infer<typeof gitTreeSchema>;
@@ -35,25 +39,108 @@ async function blobSha(content: string): Promise<string> {
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function expectedPublication(job: DeliveryJob) {
-  const { snapshot } = job;
+// An import publishes under its own root, its own record shape, and a commit message that never claims acceptance.
+function importedPublication(job: DeliveryJob) {
+  const snapshot = job.snapshot;
+  if (!isImportedSnapshot(snapshot)) return null;
+  const root = importRoot(snapshot.provider, snapshot.problemId, snapshot.submissionId, snapshot.sourceHash);
+  return {
+    root, paths: importPaths(root), schema: importRecordSchema,
+    message: IMPORT_TEXT.commitMessage(snapshot.provider, snapshot.problemId, snapshot.submissionId),
+    metadata: importRecordSchema.parse({
+      schemaVersion: 1, kind: snapshot.kind, provider: snapshot.provider, problemId: snapshot.problemId,
+      submissionId: snapshot.submissionId, recordId: snapshot.recordId, importId: job.id, claim: snapshot.claim,
+      verified: false, sourceHash: snapshot.sourceHash, sourceBytes: snapshot.sourceBytes,
+      providerLabel: snapshot.providerLabel, providerStatus: snapshot.providerStatus,
+      discoveredAt: snapshot.discoveredAt,
+      provenance: { capture: IMPORT_PROVENANCE, origin: HDL_ORIGIN },
+    }),
+  };
+}
+
+function acceptedPublication(job: DeliveryJob) {
+  const snapshot = job.snapshot;
+  if (isImportedSnapshot(snapshot)) throw new DeliveryFault(DELIVERY_TEXT.invalidAttempt);
   const root = deliveryRoot(snapshot.provider, snapshot.problemId, job.id);
-  const paths = deliveryPaths(root);
-  const metadata = acceptanceRecordSchema.parse({
-    schemaVersion: 1, provider: snapshot.provider, problemId: snapshot.problemId, attemptId: job.id,
-    sourceHash: snapshot.sourceHash, submittedAt: snapshot.submittedAt, observedAt: snapshot.observedAt,
-    provenance: { capture: snapshot.provenance.capture, verdict: GRADING_VERDICT.success },
-  });
+  return {
+    root, paths: deliveryPaths(root), schema: acceptanceRecordSchema,
+    message: DELIVERY_TEXT.commitMessage(snapshot.provider, snapshot.problemId, job.id),
+    metadata: acceptanceRecordSchema.parse({
+      schemaVersion: 1, provider: snapshot.provider, problemId: snapshot.problemId, attemptId: job.id,
+      sourceHash: snapshot.sourceHash, submittedAt: snapshot.submittedAt, observedAt: snapshot.observedAt,
+      provenance: { capture: snapshot.provenance.capture, verdict: GRADING_VERDICT.success },
+    }),
+  };
+}
+
+async function publicationFiles(
+  plan: {
+    root: string; paths: { source: string; metadata: string }; metadata: unknown;
+    schema: z.ZodType<unknown>; message: string;
+  },
+  source: string,
+) {
   const entries = [
-    { path: paths.source, mode: GIT_MODE.file, type: GIT_OBJECT.blob, content: snapshot.source },
-    { path: paths.metadata, mode: GIT_MODE.file, type: GIT_OBJECT.blob, content: JSON.stringify(metadata, null, 2) + '\n' },
+    { path: plan.paths.source, mode: GIT_MODE.file, type: GIT_OBJECT.blob, content: source },
+    {
+      path: plan.paths.metadata, mode: GIT_MODE.file, type: GIT_OBJECT.blob,
+      content: JSON.stringify(plan.metadata, null, 2) + '\n',
+    },
   ];
   const objects = await Promise.all(entries.map(async entry => ({
     path: entry.path, mode: entry.mode, type: entry.type, sha: await blobSha(entry.content),
   })));
-  return { root, paths, metadata, entries, objects };
+  return { ...plan, entries, objects };
+}
+
+async function expectedPublication(job: DeliveryJob) {
+  const { snapshot } = job;
+  const plan = importedPublication(job) ?? acceptedPublication(job);
+  if (isImportedSnapshot(snapshot)) {
+    // Source hash, derived identity, byte count, and destination binding are proven before anything is written.
+    if (await hashSource(snapshot.source) !== snapshot.sourceHash
+      || await importRecordId(snapshot) !== snapshot.recordId
+      || sourceByteLength(snapshot.source) !== snapshot.sourceBytes
+      || await importJobId(snapshot.recordId, job.target) !== job.id) {
+      throw new DeliveryFault(IMPORT_TEXT.invalidImport);
+    }
+  }
+  return publicationFiles({ ...plan, schema: plan.schema as z.ZodType<unknown> }, snapshot.source);
 }
 type ExpectedPublication = Awaited<ReturnType<typeof expectedPublication>>;
+
+// Rediscovery in another browser produces the same bytes with a later timestamp and possibly a new label.
+// Only those two may differ; the first published record stays authoritative and is never rewritten.
+function sameImportIdentity(remote: ImportRecord, expected: ImportRecord): boolean {
+  const identity = (record: ImportRecord) =>
+    JSON.stringify({ ...record, discoveredAt: '', providerLabel: '' });
+  return identity(remote) === identity(expected);
+}
+
+async function adoptImportedRecord(
+  graph: ReturnType<typeof publicationGraph>, expected: ExpectedPublication, tree: GitTree, source: string,
+): Promise<ExpectedPublication> {
+  const entry = tree.tree.find(item => item.path === expected.paths.metadata);
+  const current = importRecordSchema.safeParse(expected.metadata);
+  if (!entry || !current.success || entry.type !== GIT_OBJECT.blob || entry.mode !== GIT_MODE.file
+    || entry.sha === expected.objects[1]?.sha) return expected;
+  const blob = await graph.call(
+    () => graph.octokit.rest.git.getBlob({ ...graph.repo, file_sha: entry.sha }), metadataBlobSchema,
+  );
+  if (blob.sha !== entry.sha) throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
+  let remote: unknown;
+  try {
+    remote = JSON.parse(decodeGitBlob(blob.content, blob.size, MAX_METADATA_BYTES));
+  } catch (error) {
+    if (error instanceof InvalidRemoteFile || error instanceof SyntaxError) return expected;
+    throw error;
+  }
+  const parsed = importRecordSchema.safeParse(remote);
+  if (!parsed.success || !sameImportIdentity(parsed.data, current.data)) return expected;
+  const adopted = await publicationFiles({ ...expected, metadata: parsed.data }, source);
+  // Adoption must reproduce the stored file exactly; anything else stays a blocked collision.
+  return adopted.objects[1]?.sha === entry.sha ? adopted : expected;
+}
 
 function hasAttemptPath(tree: GitTree, expected: ExpectedPublication): boolean {
   return tree.tree.some(entry => entry.path === expected.root || entry.path.startsWith(`${expected.root}/`)
@@ -169,7 +256,7 @@ function publicationGraph(job: DeliveryJob, session: ConnectedSession, guard: ()
     const blob = await call(() => octokit.rest.git.getBlob({ ...repo, file_sha: metadata.sha }), metadataBlobSchema);
     if (blob.sha !== metadata.sha) throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
     try {
-      const parsed = acceptanceRecordSchema.safeParse(JSON.parse(decodeGitBlob(blob.content, blob.size, MAX_METADATA_BYTES)));
+      const parsed = expected.schema.safeParse(JSON.parse(decodeGitBlob(blob.content, blob.size, MAX_METADATA_BYTES)));
       return parsed.success && JSON.stringify(parsed.data) === JSON.stringify(expected.metadata);
     } catch (error) {
       if (error instanceof InvalidRemoteFile || error instanceof SyntaxError) return false;
@@ -206,8 +293,7 @@ async function publishAtHead(
   const proposed = await graph.tree(createdTree.sha);
   if (!isExpectedMutation(tree, proposed, expected)) throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
   const commit = await graph.call(() => githubWrite(() => graph.octokit.rest.git.createCommit({
-    ...graph.repo, tree: createdTree.sha, parents: [base.sha],
-    message: DELIVERY_TEXT.commitMessage(job.snapshot.provider, job.snapshot.problemId, job.id),
+    ...graph.repo, tree: createdTree.sha, parents: [base.sha], message: expected.message,
   })), gitCommitSchema);
   if (commit.tree.sha !== createdTree.sha || commit.parents.length !== 1 || commit.parents[0]?.sha !== base.sha) {
     throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
@@ -227,7 +313,7 @@ export async function publishAttempt(
 }
 
 async function originalPublication(
-  job: DeliveryJob, graph: ReturnType<typeof publicationGraph>, expected: ExpectedPublication, head: string,
+  graph: ReturnType<typeof publicationGraph>, expected: ExpectedPublication, head: string,
 ) {
   const seen = new Set<string>();
   let original: GitCommit | null = null;
@@ -237,7 +323,7 @@ async function originalPublication(
       if (seen.has(item.sha)) throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
       seen.add(item.sha);
       const commit = await graph.commit(item.sha);
-      if (commit.message?.trimEnd() !== DELIVERY_TEXT.commitMessage(job.snapshot.provider, job.snapshot.problemId, job.id)
+      if (commit.message?.trimEnd() !== expected.message
         || commit.parents.length !== 1 || !commit.parents[0]) continue;
       const parent = await graph.commit(commit.parents[0].sha);
       if (!isExpectedMutation(await graph.tree(parent.tree.sha), await graph.tree(commit.tree.sha), expected)) continue;
@@ -268,7 +354,8 @@ async function deliverAttempt(
   hooks: PublicationHooks, reconcile: boolean,
 ) {
   const graph = publicationGraph(job, session, guard, signal);
-  const expected = await expectedPublication(job);
+  const imported = isImportedSnapshot(job.snapshot);
+  let expected = await expectedPublication(job);
   let candidate = job.candidate;
   let conflict: PublicationConflict | null = null;
   let rebases = 0;
@@ -283,6 +370,9 @@ async function deliverAttempt(
     const branch = await graph.destination.verify(job.target);
     const head = await graph.commit(branch.commit.sha);
     const tree = await graph.tree(head.tree.sha);
+    if (imported) expected = await adoptImportedRecord(graph, expected, tree, job.snapshot.source);
+    // The same import rediscovered in another browser finds its own record already published and adopts it.
+    const existing = imported && hasAttemptPath(tree, expected);
     if (conflict) {
       // A 409/422 alone can also mean branch policy or validation failure, not a race.
       if (head.sha === conflict.baseCommitSha) {
@@ -292,14 +382,14 @@ async function deliverAttempt(
         throw new DeliveryBlocked(DELIVERY_TEXT.historyChanged);
       }
     }
-    if (reconcile || conflict) {
+    if (reconcile || conflict || existing) {
       if (await graph.complete(tree, expected)) {
         let original: GitCommit | null = null;
         if (candidate) {
           const prepared = await verifyCandidate(graph, candidate, expected);
           if (await graph.ancestor(prepared.sha, head.sha)) original = prepared;
         }
-        original ??= await originalPublication(job, graph, expected, head.sha);
+        original ??= await originalPublication(graph, expected, head.sha);
         if (!original) throw new DeliveryBlocked(DELIVERY_TEXT.receiptUnavailable);
         await guard();
         return { commitSha: original.sha, treeSha: original.tree.sha, confirmedAt: new Date().toISOString() };

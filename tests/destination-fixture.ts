@@ -30,7 +30,14 @@ interface DestinationFixture {
   markerContent: string;
 }
 
-export async function destinationFixture(context: BrowserContext) {
+// A second repository the same installation owns, so a test can select a genuinely separate destination.
+export interface AlternateRepository {
+  name: string;
+  repositoryId: number;
+}
+
+export async function destinationFixture(context: BrowserContext, alternate: AlternateRepository | null = null) {
+  const name = 'progress-solutions';
   const server: DestinationFixture = {
     exists: false,
     empty: false,
@@ -59,11 +66,13 @@ export async function destinationFixture(context: BrowserContext) {
     requestsValid: true,
     markerContent: '',
   };
-  const repository = () => ({
-    id: server.repositoryId, name: 'progress-solutions', owner: { id: 42, login: 'fixture-user', type: 'User' },
+  const repository = (repositoryName: string = name) => ({
+    id: repositoryName === alternate?.name ? alternate.repositoryId : server.repositoryId,
+    name: repositoryName, owner: { id: 42, login: 'fixture-user', type: 'User' },
     private: server.private, archived: server.archived, disabled: false,
     default_branch: server.defaultBranch, permissions: { push: server.userPush, admin: true },
   });
+  const owned = alternate ? [name, alternate.name] : [name];
   await context.route('https://api.github.com/**', async route => {
     const request = route.request();
     const url = new URL(request.url());
@@ -87,17 +96,20 @@ export async function destinationFixture(context: BrowserContext) {
       } });
     }
     if (url.pathname === '/user/installations/77/repositories') {
+      const listed = server.exists && server.included
+        ? server.laterRepositoryPage && url.searchParams.get('page') === '1'
+          ? [{ ...repository(), id: 202 }]
+          : owned.map(repositoryName => repository(repositoryName))
+        : [];
       return route.fulfill({ json: {
-        total_count: server.exists && server.included ? server.laterRepositoryPage ? 2 : 1 : 0,
-        repositories: server.exists && server.included
-          ? server.laterRepositoryPage && url.searchParams.get('page') === '1'
-            ? [{ ...repository(), id: 202 }] : [repository()] : [],
+        total_count: server.exists && server.included ? server.laterRepositoryPage ? 2 : owned.length : 0,
+        repositories: listed,
       } });
     }
     if (url.pathname === '/user/repos' && request.method() === 'POST') {
       server.creations++;
       const body = request.postDataJSON();
-      server.requestsValid &&= body.name === 'progress-solutions' && body.private === false && body.auto_init === true;
+      server.requestsValid &&= body.name === name && body.private === false && body.auto_init === true;
       if (server.createGate) await server.createGate;
       if (server.creationDenied) return route.fulfill({ status: 403, json: { message: 'SYNTHETIC_PRIVATE_DIAGNOSTIC' } });
       if (server.exists) return route.fulfill({ status: 422, json: { message: 'Name already exists' } });
@@ -106,9 +118,13 @@ export async function destinationFixture(context: BrowserContext) {
       if (server.loseCreationResponse) return route.abort('failed');
       return route.fulfill({ status: 201, json: repository() });
     }
-    const base = '/repos/fixture-user/progress-solutions';
+    const requested = owned.find(repositoryName =>
+      url.pathname === `/repos/fixture-user/${repositoryName}`
+      || url.pathname.startsWith(`/repos/fixture-user/${repositoryName}/`));
+    if (requested === undefined) return route.fulfill({ status: 404, json: { message: 'Unexpected fixture endpoint' } });
+    const base = `/repos/fixture-user/${requested}`;
     if (!server.exists) return route.fulfill({ status: 404, json: { message: 'Not found' } });
-    if (url.pathname === base) return route.fulfill({ json: repository() });
+    if (url.pathname === base) return route.fulfill({ json: repository(requested) });
     if (url.pathname === `${base}/branches`) {
       return route.fulfill({ json: server.empty ? [] : [{ name: server.defaultBranch }] });
     }

@@ -30,7 +30,7 @@ const noCredentials = {
 const connectedCredentials = { ...noCredentials, accessInSession: true };
 const verifiedDestination = 'Verified destination: fixture-user/progress-solutions @ learning';
 const publishOlderName = 'Publish accepted attempt to fixture-user/progress-solutions @ learning (public)';
-const emptyRecovery = '0 recorded accepted; 0 unverified saved entries.';
+const emptyRecovery = '0 recorded accepted; 0 imported unverified; 0 unverified saved entries.';
 const placeholderMarker = JSON.stringify({
   kind: 'progress-sync', schemaVersion: 1, initializationId: '12345678-1234-4234-8234-123456789abc',
 });
@@ -172,7 +172,7 @@ test('the guest journey reaches accepted publication and is restored in a fresh 
     await freshDestination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
     await expect(freshDestination.getByRole('status')).toHaveText(verifiedDestination);
 
-    await expect(restored.locator('#recovery-status')).toHaveText('2 recorded accepted; 0 unverified saved entries.');
+    await expect(restored.locator('#recovery-status')).toHaveText('2 recorded accepted; 0 imported unverified; 0 unverified saved entries.');
     for (const record of records) {
       const entry = restored.locator('#recovered-entries article').filter({ hasText: record.id });
       await expect(entry.getByRole('heading', { name: `hdlbits:${record.problemId}`, exact: true })).toBeVisible();

@@ -9,12 +9,13 @@ export const RECOVERY_SOURCE_SUFFIX = '.v';
 export const RECOVERY_MESSAGE_PREFIX = 'recovery:';
 export const RECOVERY_MESSAGE = { list: 'recovery:list', refresh: 'recovery:refresh', changed: 'recovery:changed' } as const;
 export const RECOVERY_STATUS = { loading: 'loading', ready: 'ready', failed: 'failed' } as const;
-export const RECOVERY_ENTRY = { recorded: 'recorded', unverified: 'unverified' } as const;
+export const RECOVERY_ENTRY = { recorded: 'recorded', imported: 'imported', unverified: 'unverified' } as const;
 export const MAX_REMOTE_PATH_LENGTH = 4096;
 export const MAX_ENCODED_BLOB_CHARACTERS = githubBase64CharacterLimit(MAX_SOURCE_BYTES);
 export const RECOVERY_ISSUE = {
   metadataMissing: 'metadata-missing', metadataInvalid: 'metadata-invalid', sourceMissing: 'source-missing',
   sourceInvalid: 'source-invalid', identityMismatch: 'identity-mismatch', hashMismatch: 'hash-mismatch',
+  recordMismatch: 'record-mismatch',
 } as const;
 export const RECOVERY_MESSAGES = {
   [RECOVERY_ISSUE.metadataMissing]: 'Acceptance metadata is missing or is not in a supported record path.',
@@ -23,6 +24,7 @@ export const RECOVERY_MESSAGES = {
   [RECOVERY_ISSUE.sourceInvalid]: 'The source or metadata file is oversized, incorrectly encoded, or not a regular file.',
   [RECOVERY_ISSUE.identityMismatch]: 'The record identity or observation timestamps do not match its saved attempt.',
   [RECOVERY_ISSUE.hashMismatch]: 'The saved source hash does not match the acceptance record.',
+  [RECOVERY_ISSUE.recordMismatch]: 'The record identity derived from the saved source does not match the stored metadata.',
 } satisfies Record<(typeof RECOVERY_ISSUE)[keyof typeof RECOVERY_ISSUE], string>;
 export const RECOVERY_TEXT = {
   invalidInput: 'Unsupported recovery operation or sender.',
@@ -39,10 +41,12 @@ export const RECOVERY_TEXT = {
   interfaceIncomplete: 'Saved-progress interface is incomplete.',
   cached: 'Showing the previously recovered snapshot, not a completed refresh.',
   recorded: 'Recorded acceptance from GitHub',
+  imported: 'Imported from HDLBits - unverified, no acceptance was observed',
   sourceLabel: 'Recovered source (read-only)',
   refresh: 'Refresh saved progress',
   unverified: (reason: string) => `Unverified saved file: ${reason}`,
-  summary: (recorded: number, unverified: number) => `${recorded} recorded accepted; ${unverified} unverified saved entries.`,
+  summary: (recorded: number, imported: number, unverified: number) =>
+    `${recorded} recorded accepted; ${imported} imported unverified; ${unverified} unverified saved entries.`,
   snapshot: (sha: string) => `Repository snapshot ${sha}`,
   readAt: (timestamp: string) => `Recovered at ${timestamp}`,
 } as const;

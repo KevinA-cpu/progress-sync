@@ -1,6 +1,7 @@
 import type { BrowserContext, Page } from '@playwright/test';
 
-export async function trackContentScript(context: BrowserContext, page: Page) {
+// A page can host more than one of the extension's content scripts; the pathname picks the intended document.
+export async function trackContentScript(context: BrowserContext, page: Page, pathname = '/runsim.php') {
   const worker = context.serviceWorkers()[0];
   if (!worker) throw new Error('Missing extension worker.');
   const extensionId = new URL(worker.url()).hostname;
@@ -16,7 +17,8 @@ export async function trackContentScript(context: BrowserContext, page: Page) {
       for (const contextId of contexts) {
         const result = await session.send('Runtime.evaluate', {
           contextId,
-          expression: `globalThis.chrome?.runtime?.id === ${JSON.stringify(extensionId)}`,
+          expression: `globalThis.chrome?.runtime?.id === ${JSON.stringify(extensionId)}`
+            + ` && location.pathname === ${JSON.stringify(pathname)}`,
           returnByValue: true,
         });
         if (result.result.value === true) {

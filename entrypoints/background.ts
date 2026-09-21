@@ -17,6 +17,9 @@ import { z } from '../lib/schema';
 import { createRecoveryService } from '../lib/recovery/service';
 import { type RecoveryReply } from '../lib/recovery/schemas';
 import { RECOVERY_MESSAGE_PREFIX, RECOVERY_TEXT } from '../lib/constants/recovery';
+import { createImportService } from '../lib/import/service';
+import { type ImportReply } from '../lib/import/schemas';
+import { IMPORT_MESSAGE_PREFIX, IMPORT_TEXT } from '../lib/constants/import';
 
 const messageEnvelopeSchema = z.object({ type: z.string() });
 
@@ -25,6 +28,7 @@ export default defineBackground(() => {
   const destination = createDestinationService(github);
   const delivery = createDeliveryService(github, destination, (id, persist) => capture.discardAccepted(id, persist));
   const recovery = createRecoveryService(github, destination);
+  const imports = createImportService(delivery.publishImport, delivery.importedSnapshot);
   const capture = createCaptureService(delivery.accepted);
   const requests = { urls: [GRADING_URL], types: [RESOURCE_TYPE.mainFrame, RESOURCE_TYPE.subFrame] as const };
   const filter = { urls: requests.urls, types: [...requests.types] };
@@ -44,6 +48,13 @@ export default defineBackground(() => {
         void recovery.message(message, sender).then(sendResponse, () => {
           console.warn(RECOVERY_TEXT.operationFailed);
           const reply: RecoveryReply = { ok: false, error: RECOVERY_TEXT.readFailed };
+          sendResponse(reply);
+        });
+        return true;
+      case IMPORT_MESSAGE_PREFIX:
+        void imports.message(message, sender).then(sendResponse, () => {
+          console.error(IMPORT_TEXT.operationFailed);
+          const reply: ImportReply = { ok: false, error: IMPORT_TEXT.readFailed };
           sendResponse(reply);
         });
         return true;
@@ -86,7 +97,10 @@ export default defineBackground(() => {
   browser.action.onClicked.addListener(() => {
     void browser.runtime.openOptionsPage().catch(capture.reportFailure);
   });
-  browser.tabs.onRemoved.addListener(github.ownerClosed);
+  browser.tabs.onRemoved.addListener(tabId => {
+    github.ownerClosed(tabId);
+    imports.closed(tabId);
+  });
   browser.tabs.onUpdated.addListener((tabId, changes) => {
     if (changes.status === TAB_STATUS.loading || changes.discarded === true) github.ownerClosed(tabId);
   });
@@ -96,4 +110,5 @@ export default defineBackground(() => {
   });
   browser.runtime.onStartup.addListener(() => { delivery.resume(); });
   delivery.resume();
+  imports.resume();
 });

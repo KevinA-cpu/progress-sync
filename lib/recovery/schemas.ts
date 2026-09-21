@@ -6,6 +6,7 @@ import { MAX_TREE_ENTRIES } from '../constants/delivery';
 import { GITHUB_CONTENT } from '../constants/github';
 import { acceptanceRecordSchema, gitShaSchema, gitTreeSchema } from '../delivery/schemas';
 import { destinationTargetSchema } from '../destination/schemas';
+import { importRecordSchema } from '../import/schemas';
 import { submittedSourceSchema } from '../progress';
 
 export const remotePathSchema = z.string().min(1).max(MAX_REMOTE_PATH_LENGTH).refine(path =>
@@ -30,6 +31,11 @@ export const recoveredEntrySchema = z.discriminatedUnion('state', [
   z.strictObject({
     state: z.literal(RECOVERY_ENTRY.recorded), path: remotePathSchema,
     source: submittedSourceSchema, metadata: acceptanceRecordSchema,
+  }),
+  // An imported record is recovered as its own state; it never claims acceptance, whatever its metadata says.
+  z.strictObject({
+    state: z.literal(RECOVERY_ENTRY.imported), path: remotePathSchema,
+    source: submittedSourceSchema, metadata: importRecordSchema,
   }),
   z.strictObject({
     state: z.literal(RECOVERY_ENTRY.unverified), path: remotePathSchema,
