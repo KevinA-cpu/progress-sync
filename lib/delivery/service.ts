@@ -3,9 +3,9 @@ import { EXTENSION_PAGE, STORAGE_ACCESS } from '../constants/browser';
 import { DESTINATION_ISSUE } from '../constants/destination';
 import {
   DELIVERY_FAILURE, DELIVERY_KEY, DELIVERY_MESSAGE, DELIVERY_RETRY_ALARM, DELIVERY_SCHEDULE_KEY, DELIVERY_STATE,
-  DELIVERY_TEXT, DELIVERY_THROTTLE_KEY, DISCARDED_DELIVERY_KEY,
+  DELIVERY_TEXT, DELIVERY_THROTTLE_KEY, DISCARDED_DELIVERY_KEY, PUBLICATION_LAYOUT,
 } from '../constants/delivery';
-import { PROGRESS_KEY } from '../constants/progress';
+import { CAPTURE_STATE, PROGRESS_KEY } from '../constants/progress';
 import { IMPORT_SNAPSHOT_KIND, IMPORT_TEXT } from '../constants/import';
 import {
   importedSnapshotSchema, importJobId, importRecordId, type ImportCandidate, type ImportedSnapshot,
@@ -19,13 +19,15 @@ import { DestinationFault, sameDestination, type DestinationTarget } from '../de
 import type { DestinationService } from '../destination/service';
 import { githubResponseStatus, GithubWriteRejected } from '../github/errors';
 import { publishAttempt, reconcileAttempt } from './api';
+import { dropDiagramImages, readDiagramImages } from '../diagram-store';
 import { classifyDeliveryFailure, nextDeliveryAttempt, rateLimitNotBefore, resumeAfterReservation } from './retry';
 import {
   acceptedSnapshotSchema, DeliveryBlocked, DeliveryFault, deliveryJobsSchema, deliveryRequestSchema,
-  importedJobSnapshot,
+  failedSnapshotSchema, importedJobSnapshot, isFailedSnapshot, isImportedSnapshot,
   deliveryThrottleSchema, discardedDeliveryIdsSchema, parseDelivery, scheduleHealthSchema, type DeliveryJob,
-  type DeliveryReply, type PublicationCandidate, type PublishRequest, type ScheduleHealth,
+  type DeliveryReply, type PublicationCandidate, type PublishFailedRequest, type PublishRequest, type ScheduleHealth,
 } from './schemas';
+import type { PublicationPolicy } from '../destination/service';
 
 interface DeliveryAttempt {
   expectedConnectionId: string;
@@ -156,28 +158,54 @@ export function createDeliveryService(
     storageQueue = operation.then(() => undefined, () => undefined);
     return operation;
   }
-  async function assign(attemptId: string, confirmation?: PublishRequest): Promise<DeliveryJob | null> {
+  // A job takes the destination's layout once, at creation. A repository dedicated to one provider refuses
+  // another rather than sharing its namespace.
+  function boundLayout(policy: PublicationPolicy, provider: string) {
+    if (policy.layout === PUBLICATION_LAYOUT.problemFirst && policy.provider !== provider) {
+      throw new DeliveryFault(DELIVERY_TEXT.providerMismatch);
+    }
+    return policy.layout;
+  }
+  // Automatic delivery of a failed attempt needs the destination's own setting, and reaches only attempts
+  // captured after it was turned on. Local history stays local until each record is published explicitly.
+  function automaticFailed(policy: PublicationPolicy, submittedAt: string): boolean {
+    return policy.publishFailed && policy.publishFailedSince !== null
+      && Date.parse(policy.publishFailedSince) <= Date.parse(submittedAt);
+  }
+  async function assign(
+    attemptId: string, confirmation?: PublishRequest | PublishFailedRequest,
+  ): Promise<DeliveryJob | null> {
     if (discarding.has(attemptId) || (await discardedIds()).includes(attemptId)) {
       throw new DeliveryFault(DELIVERY_TEXT.discarded);
     }
     if ((await storedJobs()).some(job => job.id === attemptId)) return null;
-    const snapshot = parseDelivery(
-      (await readAttempts()).find(attempt => attempt.id === attemptId), acceptedSnapshotSchema, DELIVERY_TEXT.invalidAttempt,
-    );
-    if (await hashSource(snapshot.source) !== snapshot.sourceHash) throw new DeliveryFault(DELIVERY_TEXT.invalidAttempt);
+    const stored = (await readAttempts()).find(attempt => attempt.id === attemptId);
+    const failed = stored?.state === CAPTURE_STATE.failed;
+    const invalid = failed ? DELIVERY_TEXT.invalidFailedAttempt : DELIVERY_TEXT.invalidAttempt;
+    // Confirming an accepted publication never covers a failed attempt, and the reverse is equally refused.
+    if (confirmation && failed !== (confirmation.type === DELIVERY_MESSAGE.publishFailed)) {
+      throw new DeliveryFault(invalid);
+    }
+    const snapshot = failed
+      ? parseDelivery(stored, failedSnapshotSchema, invalid)
+      : parseDelivery(stored, acceptedSnapshotSchema, invalid);
+    if (await hashSource(snapshot.source) !== snapshot.sourceHash) throw new DeliveryFault(invalid);
     try {
       return await github.withConnection(async (session, guard) => {
         const target = await destination.selection(session);
+        const policy = await destination.publicationPolicy(session);
         if (confirmation) {
           if (confirmation.expectedConnectionId !== target.connectionId
             || confirmation.expectedSelectionId !== target.operationId) {
             throw new DeliveryFault(DELIVERY_TEXT.sessionChanged);
           }
-        } else if (Date.parse(target.selectedAt) > Date.parse(snapshot.submittedAt)) {
+        } else if (Date.parse(target.selectedAt) > Date.parse(snapshot.submittedAt)
+          || (failed && !automaticFailed(policy, snapshot.submittedAt))) {
           return null;
         }
         const job: DeliveryJob = {
           schemaVersion: 1, id: snapshot.id, snapshot, target, createdAt: new Date().toISOString(),
+          layout: boundLayout(policy, snapshot.provider),
           state: DELIVERY_STATE.pending, detail: null, receipt: null, candidate: null,
         };
         await guard();
@@ -207,8 +235,10 @@ export function createDeliveryService(
         const id = await importJobId(candidate.recordId, target);
         if (discarding.has(id) || (await discardedIds()).includes(id)) throw new DeliveryFault(DELIVERY_TEXT.discarded);
         if ((await storedJobs()).some(job => job.id === id)) return null;
+        const policy = await destination.publicationPolicy(session);
         const job: DeliveryJob = {
           schemaVersion: 1, id, target, createdAt: new Date().toISOString(),
+          layout: boundLayout(policy, candidate.provider),
           snapshot: parseDelivery(
             { ...candidate, kind: IMPORT_SNAPSHOT_KIND, id }, importedSnapshotSchema, IMPORT_TEXT.invalidImport,
           ),
@@ -279,7 +309,8 @@ export function createDeliveryService(
         }
         if (await hashSource(job.snapshot.source) !== job.snapshot.sourceHash) {
           throw new DeliveryBlocked(
-            importedJobSnapshot(job) ? IMPORT_TEXT.invalidImport : DELIVERY_TEXT.invalidAttempt,
+            importedJobSnapshot(job) ? IMPORT_TEXT.invalidImport
+              : isFailedSnapshot(job.snapshot) ? DELIVERY_TEXT.invalidFailedAttempt : DELIVERY_TEXT.invalidAttempt,
           );
         }
         const hooks = {
@@ -295,17 +326,25 @@ export function createDeliveryService(
           },
         };
         job.detail = null;
+        // Image bytes live outside the job, so they are read at publication time and checked against the
+        // report that names them before anything is written.
+        const named = isImportedSnapshot(job.snapshot) ? [] : job.snapshot.report?.diagrams ?? [];
+        const images = named.length === 0 ? [] : await readDiagramImages(job.id) ?? [];
+        if (images.length < named.length) throw new DeliveryBlocked(DELIVERY_TEXT.diagramsUnavailable);
         if (attempt?.reconcile) {
           job.state = DELIVERY_STATE.reconciling;
           await guard();
           await save(job);
-          job.receipt = await reconcileAttempt(job, session, guard, signal, hooks);
+          job.receipt = await reconcileAttempt(job, session, guard, signal, hooks, images);
         } else {
-          job.receipt = await publishAttempt(job, session, guard, signal, hooks);
+          job.receipt = await publishAttempt(job, session, guard, signal, hooks, images);
         }
         job.state = DELIVERY_STATE.saved;
         job.retry = null;
         await save(job);
+        // The images are durable on GitHub now and are recoverable from there, so the local copies are released.
+        // A failure here leaves them in place; it never turns a confirmed publication into a blocked one.
+        if (images.length > 0) await dropDiagramImages(job.id).catch(() => undefined);
       });
     } catch (error) {
       const rejected = error instanceof GithubWriteRejected;
@@ -339,7 +378,9 @@ export function createDeliveryService(
       active.delete(job.id);
     }
   }
-  function intake(attemptId: string, confirmation?: PublishRequest): Promise<DeliveryJob | null> {
+  function intake(
+    attemptId: string, confirmation?: PublishRequest | PublishFailedRequest,
+  ): Promise<DeliveryJob | null> {
     const operation = intakeQueue.then(() => assign(attemptId, confirmation));
     intakeQueue = operation.then(() => undefined, () => undefined);
     return operation;
@@ -360,7 +401,8 @@ export function createDeliveryService(
     void settled.then(() => schedule());
     return operation;
   }
-  async function accepted(attemptId: string): Promise<string | null> {
+  // Every recorded attempt is offered to delivery; what its destination accepts automatically is decided in assign.
+  async function recorded(attemptId: string): Promise<string | null> {
     try {
       const job = await intake(attemptId);
       if (job) void enqueue(job.id);
@@ -544,7 +586,8 @@ export function createDeliveryService(
       switch (input.type) {
         case DELIVERY_MESSAGE.list:
           return await view();
-        case DELIVERY_MESSAGE.publish: {
+        case DELIVERY_MESSAGE.publish:
+        case DELIVERY_MESSAGE.publishFailed: {
           const job = await intake(input.attemptId, input);
           if (job) {
             await enqueue(job.id, {
@@ -569,5 +612,5 @@ export function createDeliveryService(
         : error instanceof AuthFault ? DELIVERY_TEXT.sessionChanged : DELIVERY_TEXT.operationFailed };
     }
   }
-  return { accepted, message, alarm, resume, publishImport, importedSnapshot };
+  return { recorded, message, alarm, resume, publishImport, importedSnapshot };
 }

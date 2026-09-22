@@ -1,23 +1,29 @@
 import { z } from '../schema';
 import {
   DELIVERY_TEXT, GIT_BLOB_HASH_ALGORITHM, GIT_MODE, GIT_OBJECT, GIT_RECURSIVE, MAX_METADATA_BYTES, MAX_PUBLICATION_REBASES,
-  deliveryPaths, deliveryRef, deliveryRoot,
+  PUBLICATION_LAYOUT, RECORD_KIND, deliveryPaths, deliveryRef, deliveryRoot, diagramPath, failedPaths, failedRoot,
+  problemRecordRoot,
 } from '../constants/delivery';
 import { GRADING_VERDICT, HDL_ORIGIN } from '../constants/progress';
+import { REPORT_FILE } from '../constants/report';
+import { decodeBase64, hashBytes, readPng } from '../diagram';
+import type { Diagram, DiagramImage } from '../report';
 import { IMPORT_PROVENANCE, IMPORT_TEXT, importPaths, importRoot } from '../constants/import';
 import { importJobId, importRecordId, importRecordSchema, type ImportRecord } from '../import/schemas';
 import { hashSource, sourceByteLength } from '../progress';
-import { GITHUB_COMPARISON, GITHUB_HTTP_STATUS, GITHUB_PAGINATION } from '../constants/github';
+import { GITHUB_COMPARISON, GITHUB_CONTENT, GITHUB_HTTP_STATUS, GITHUB_PAGINATION } from '../constants/github';
 import { destinationApi } from '../destination/api';
 import { githubRest } from '../github/rest';
 import { githubWrite, GithubWriteRejected } from '../github/errors';
 import { decodeGitBlob, InvalidRemoteFile } from '../github/blob';
 import type { ConnectedSession } from '../github/schemas';
 import {
-  acceptanceRecordSchema, DeliveryBlocked, DeliveryFault, gitCommitSchema, gitComparisonSchema, gitObjectSchema,
-  gitRefSchema, gitTreeSchema, isImportedSnapshot, metadataBlobSchema, pathCommitsSchema, parseDelivery,
-  type DeliveryJob, type PublicationCandidate,
+  acceptanceRecordSchema, DeliveryBlocked, DeliveryFault, failedRecordSchema, gitCommitSchema, gitComparisonSchema,
+  gitObjectSchema, gitRefSchema, gitTreeSchema, isFailedSnapshot, isImportedSnapshot, metadataBlobSchema,
+  pathCommitsSchema, parseDelivery, reportRecordContent, type AcceptedSnapshot, type DeliveryJob,
+  type FailedSnapshot, type PublicationCandidate,
 } from './schemas';
+import type { CapturedReport } from '../report';
 
 type GitTree = z.infer<typeof gitTreeSchema>;
 type GitCommit = z.infer<typeof gitCommitSchema>;
@@ -31,21 +37,53 @@ class PublicationConflict extends DeliveryFault {
   }
 }
 
-async function blobSha(content: string): Promise<string> {
-  const encoder = new TextEncoder();
-  // Git object IDs hash a byte-length header as well as the exact UTF-8 payload.
-  const bytes = encoder.encode(`blob ${encoder.encode(content).length}\0${content}`);
+async function blobShaBytes(content: Uint8Array): Promise<string> {
+  // Git object IDs hash a byte-length header as well as the exact payload.
+  const header = new TextEncoder().encode(`blob ${content.length}\0`);
+  const bytes = new Uint8Array(header.length + content.length);
+  bytes.set(header);
+  bytes.set(content, header.length);
   const digest = await crypto.subtle.digest(GIT_BLOB_HASH_ALGORITHM, bytes);
   return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function blobSha(content: string): Promise<string> {
+  return blobShaBytes(new TextEncoder().encode(content));
+}
+
+// An image is published only if its bytes are the ones the report already named: same length, same PNG
+// dimensions, same digest. Anything else blocks the write rather than publishing a file the report misdescribes.
+async function diagramFiles(root: string, diagrams: Diagram[], images: DiagramImage[]) {
+  const files: { path: string; bytes: Uint8Array; data: string }[] = [];
+  for (const diagram of diagrams) {
+    const image = images.find(item => item.name === diagram.name);
+    const bytes = image ? decodeBase64(image.data) : null;
+    if (!image || !bytes) throw new DeliveryBlocked(DELIVERY_TEXT.diagramsUnavailable);
+    const png = readPng(bytes);
+    if (bytes.length !== diagram.byteLength || !png || png.width !== diagram.width
+      || png.height !== diagram.height || await hashBytes(bytes) !== diagram.hash) {
+      throw new DeliveryBlocked(DELIVERY_TEXT.diagramsInvalid);
+    }
+    files.push({ path: diagramPath(root, diagram.name), bytes, data: image.data });
+  }
+  return files;
+}
+
+function problemFirst(job: DeliveryJob): boolean {
+  return job.layout === PUBLICATION_LAYOUT.problemFirst;
 }
 
 // An import publishes under its own root, its own record shape, and a commit message that never claims acceptance.
 function importedPublication(job: DeliveryJob) {
   const snapshot = job.snapshot;
   if (!isImportedSnapshot(snapshot)) return null;
-  const root = importRoot(snapshot.provider, snapshot.problemId, snapshot.submissionId, snapshot.sourceHash);
+  // The record id already derives from provider, problem, slot, and source hash, so rediscovery at a later
+  // time resolves to the same folder.
+  const root = problemFirst(job)
+    ? problemRecordRoot(snapshot.problemId, RECORD_KIND.imported, snapshot.recordId)
+    : importRoot(snapshot.provider, snapshot.problemId, snapshot.submissionId, snapshot.sourceHash);
   return {
-    root, paths: importPaths(root), schema: importRecordSchema,
+    root, paths: importPaths(root), schema: importRecordSchema, diagrams: [],
     message: IMPORT_TEXT.commitMessage(snapshot.provider, snapshot.problemId, snapshot.submissionId),
     metadata: importRecordSchema.parse({
       schemaVersion: 1, kind: snapshot.kind, provider: snapshot.provider, problemId: snapshot.problemId,
@@ -58,44 +96,102 @@ function importedPublication(job: DeliveryJob) {
   };
 }
 
-function acceptedPublication(job: DeliveryJob) {
+// A failed attempt publishes its source, its own record shape, and the report the result stated. The record
+// names a different file with a different kind, so no reader can count it as an acceptance.
+// The published report states exactly what the capture concluded, including which diagrams it stored and the
+// attribution they carry.
+function reportContentFor(
+  job: DeliveryJob, snapshot: AcceptedSnapshot | FailedSnapshot, report: CapturedReport, outcome: string,
+) {
+  return reportRecordContent({
+    provider: snapshot.provider, problemId: snapshot.problemId, attemptId: job.id, outcome,
+    observedAt: snapshot.observedAt, capture: snapshot.provenance.capture, report,
+  });
+}
+
+async function failedPublication(job: DeliveryJob, images: DiagramImage[]) {
+  const snapshot = job.snapshot;
+  if (isImportedSnapshot(snapshot) || !isFailedSnapshot(snapshot)) return null;
+  const root = problemFirst(job)
+    ? problemRecordRoot(snapshot.problemId, RECORD_KIND.failed, job.id)
+    : failedRoot(snapshot.provider, snapshot.problemId, job.id);
+  const reportContent = reportContentFor(job, snapshot, snapshot.report, snapshot.outcome);
+  return {
+    root, paths: failedPaths(root), schema: failedRecordSchema, reportContent,
+    diagrams: await diagramFiles(root, snapshot.report.diagrams ?? [], images),
+    message: DELIVERY_TEXT.failedCommitMessage(snapshot.provider, snapshot.problemId, job.id, snapshot.outcome),
+    metadata: failedRecordSchema.parse({
+      schemaVersion: 1, kind: RECORD_KIND.failed, accepted: false, provider: snapshot.provider,
+      problemId: snapshot.problemId, attemptId: job.id, outcome: snapshot.outcome,
+      sourceHash: snapshot.sourceHash, sourceBytes: sourceByteLength(snapshot.source),
+      submittedAt: snapshot.submittedAt, observedAt: snapshot.observedAt,
+      reportHash: await hashSource(reportContent), reportBytes: sourceByteLength(reportContent),
+      provenance: { capture: snapshot.provenance.capture, verdict: snapshot.outcome, origin: HDL_ORIGIN },
+    }),
+  };
+}
+
+// An accepted attempt publishes its report and diagrams the same way a failed one does. Attempts captured
+// before reports existed have none, and publish the two files they always did.
+async function acceptedPublication(job: DeliveryJob, images: DiagramImage[]) {
   const snapshot = job.snapshot;
   if (isImportedSnapshot(snapshot)) throw new DeliveryFault(DELIVERY_TEXT.invalidAttempt);
-  const root = deliveryRoot(snapshot.provider, snapshot.problemId, job.id);
+  const root = problemFirst(job)
+    ? problemRecordRoot(snapshot.problemId, RECORD_KIND.passed, job.id)
+    : deliveryRoot(snapshot.provider, snapshot.problemId, job.id);
+  const report = snapshot.report;
+  const reportContent = report ? reportContentFor(job, snapshot, report, GRADING_VERDICT.success) : undefined;
+  const paths = deliveryPaths(root);
   return {
-    root, paths: deliveryPaths(root), schema: acceptanceRecordSchema,
+    root, schema: acceptanceRecordSchema,
+    ...reportContent !== undefined ? { reportContent } : {},
+    paths: reportContent === undefined ? paths : { ...paths, report: `${root}/${REPORT_FILE}` },
+    diagrams: await diagramFiles(root, report?.diagrams ?? [], images),
     message: DELIVERY_TEXT.commitMessage(snapshot.provider, snapshot.problemId, job.id),
     metadata: acceptanceRecordSchema.parse({
       schemaVersion: 1, provider: snapshot.provider, problemId: snapshot.problemId, attemptId: job.id,
       sourceHash: snapshot.sourceHash, submittedAt: snapshot.submittedAt, observedAt: snapshot.observedAt,
+      ...reportContent !== undefined
+        ? { reportHash: await hashSource(reportContent), reportBytes: sourceByteLength(reportContent) }
+        : {},
       provenance: { capture: snapshot.provenance.capture, verdict: GRADING_VERDICT.success },
     }),
   };
 }
 
+interface PublicationFile { path: string; mode: typeof GIT_MODE.file; type: typeof GIT_OBJECT.blob }
+type PublicationEntry = (PublicationFile & { content: string }) | (PublicationFile & { data: string; bytes: Uint8Array });
+
 async function publicationFiles(
   plan: {
-    root: string; paths: { source: string; metadata: string }; metadata: unknown;
-    schema: z.ZodType<unknown>; message: string;
+    root: string; paths: { source: string; metadata: string; report?: string }; metadata: unknown;
+    schema: z.ZodType<unknown>; message: string; reportContent?: string;
+    diagrams: { path: string; bytes: Uint8Array; data: string }[];
   },
   source: string,
 ) {
-  const entries = [
-    { path: plan.paths.source, mode: GIT_MODE.file, type: GIT_OBJECT.blob, content: source },
-    {
-      path: plan.paths.metadata, mode: GIT_MODE.file, type: GIT_OBJECT.blob,
-      content: JSON.stringify(plan.metadata, null, 2) + '\n',
-    },
+  const file = { mode: GIT_MODE.file, type: GIT_OBJECT.blob } as const;
+  // Source, record, report where the outcome has one, and every diagram image are one write. A partial folder
+  // is never a record, and an image never appears without the report that names it.
+  const entries: PublicationEntry[] = [
+    { path: plan.paths.source, ...file, content: source },
+    { path: plan.paths.metadata, ...file, content: JSON.stringify(plan.metadata, null, 2) + '\n' },
+    ...plan.paths.report !== undefined && plan.reportContent !== undefined
+      ? [{ path: plan.paths.report, ...file, content: plan.reportContent }]
+      : [],
+    ...plan.diagrams.map(diagram => ({ path: diagram.path, ...file, data: diagram.data, bytes: diagram.bytes })),
   ];
   const objects = await Promise.all(entries.map(async entry => ({
-    path: entry.path, mode: entry.mode, type: entry.type, sha: await blobSha(entry.content),
+    path: entry.path, mode: entry.mode, type: entry.type,
+    sha: 'content' in entry ? await blobSha(entry.content) : await blobShaBytes(entry.bytes),
   })));
   return { ...plan, entries, objects };
 }
 
-async function expectedPublication(job: DeliveryJob) {
+async function expectedPublication(job: DeliveryJob, images: DiagramImage[]) {
   const { snapshot } = job;
-  const plan = importedPublication(job) ?? acceptedPublication(job);
+  const plan = importedPublication(job) ?? await failedPublication(job, images)
+    ?? await acceptedPublication(job, images);
   if (isImportedSnapshot(snapshot)) {
     // Source hash, derived identity, byte count, and destination binding are proven before anything is written.
     if (await hashSource(snapshot.source) !== snapshot.sourceHash
@@ -247,11 +343,17 @@ function publicationGraph(job: DeliveryJob, session: ConnectedSession, guard: ()
     return { commits, next };
   }
   async function complete(tree: GitTree, expected: ExpectedPublication): Promise<boolean> {
-    const source = tree.tree.find(entry => entry.path === expected.paths.source);
     const metadata = tree.tree.find(entry => entry.path === expected.paths.metadata);
-    if (!source || !metadata || source.type !== GIT_OBJECT.blob || source.mode !== GIT_MODE.file
-      || metadata.type !== GIT_OBJECT.blob || metadata.mode !== GIT_MODE.file
-      || source.sha !== expected.objects[0]?.sha) return false;
+    if (!metadata || metadata.type !== GIT_OBJECT.blob || metadata.mode !== GIT_MODE.file) return false;
+    // Source, report, and each image follow byte for byte from the record, so only the exact published files
+    // count as the same publication.
+    for (const object of expected.objects) {
+      if (object.path === expected.paths.metadata) continue;
+      const entry = tree.tree.find(item => item.path === object.path);
+      if (!entry || entry.type !== GIT_OBJECT.blob || entry.mode !== GIT_MODE.file || entry.sha !== object.sha) {
+        return false;
+      }
+    }
     if (metadata.sha === expected.objects[1]?.sha) return true;
     const blob = await call(() => octokit.rest.git.getBlob({ ...repo, file_sha: metadata.sha }), metadataBlobSchema);
     if (blob.sha !== metadata.sha) throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
@@ -287,8 +389,25 @@ async function publishAtHead(
   if (hasAttemptPath(tree, expected)) throw new DeliveryFault(DELIVERY_TEXT.existingPath);
   await guard();
   await hooks.beforeWrite();
+  // Image bytes cannot ride in a tree request, so each one becomes a blob first and is referenced by the id
+  // this client computed for it. A returned id that differs is not written into any tree.
+  const shas = new Map(expected.objects.map(object => [object.path, object.sha]));
+  for (const entry of expected.entries) {
+    if ('content' in entry) continue;
+    const blob = await graph.call(() => githubWrite(() => graph.octokit.rest.git.createBlob({
+      ...graph.repo, content: entry.data, encoding: GITHUB_CONTENT.base64,
+    })), gitObjectSchema);
+    if (blob.sha !== shas.get(entry.path)) throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
+  }
   const createdTree = await graph.call(() => githubWrite(() => graph.octokit.rest.git.createTree({
-    ...graph.repo, base_tree: base.tree.sha, tree: expected.entries,
+    ...graph.repo, base_tree: base.tree.sha,
+    tree: expected.entries.map(entry => {
+      const { path, mode, type } = entry;
+      if ('content' in entry) return { path, mode, type, content: entry.content };
+      const sha = shas.get(path);
+      if (!sha) throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
+      return { path, mode, type, sha };
+    }),
   })), gitObjectSchema);
   const proposed = await graph.tree(createdTree.sha);
   if (!isExpectedMutation(tree, proposed, expected)) throw new DeliveryFault(DELIVERY_TEXT.invalidResponse);
@@ -307,9 +426,10 @@ async function publishAtHead(
 }
 
 export async function publishAttempt(
-  job: DeliveryJob, session: ConnectedSession, guard: () => Promise<void>, signal: AbortSignal, hooks: PublicationHooks,
+  job: DeliveryJob, session: ConnectedSession, guard: () => Promise<void>, signal: AbortSignal,
+  hooks: PublicationHooks, images: DiagramImage[],
 ) {
-  return deliverAttempt(job, session, guard, signal, hooks, false);
+  return deliverAttempt(job, session, guard, signal, hooks, false, images);
 }
 
 async function originalPublication(
@@ -344,18 +464,19 @@ async function hasAttemptHistory(
 }
 
 export async function reconcileAttempt(
-  job: DeliveryJob, session: ConnectedSession, guard: () => Promise<void>, signal: AbortSignal, hooks: PublicationHooks,
+  job: DeliveryJob, session: ConnectedSession, guard: () => Promise<void>, signal: AbortSignal,
+  hooks: PublicationHooks, images: DiagramImage[],
 ) {
-  return deliverAttempt(job, session, guard, signal, hooks, true);
+  return deliverAttempt(job, session, guard, signal, hooks, true, images);
 }
 
 async function deliverAttempt(
   job: DeliveryJob, session: ConnectedSession, guard: () => Promise<void>, signal: AbortSignal,
-  hooks: PublicationHooks, reconcile: boolean,
+  hooks: PublicationHooks, reconcile: boolean, images: DiagramImage[],
 ) {
   const graph = publicationGraph(job, session, guard, signal);
   const imported = isImportedSnapshot(job.snapshot);
-  let expected = await expectedPublication(job);
+  let expected = await expectedPublication(job, images);
   let candidate = job.candidate;
   let conflict: PublicationConflict | null = null;
   let rebases = 0;

@@ -4,14 +4,30 @@ import { AUTH_SESSION_KEY } from '../../lib/constants/github';
 import { DESTINATION_STORAGE_PREFIX } from '../../lib/constants/destination';
 import { deliveryCommitUrl, DELIVERY_TEXT } from '../../lib/constants/delivery';
 import { IMPORT_TEXT } from '../../lib/constants/import';
-import { PROGRESS_TEXT } from '../../lib/constants/progress';
+import { PROGRESS_TEXT, VERDICT_LABEL } from '../../lib/constants/progress';
+import { REPORT_TEXT } from '../../lib/constants/report';
 import {
   RECOVERY_ENTRY, RECOVERY_MESSAGE, RECOVERY_MESSAGES, RECOVERY_STATUS, RECOVERY_TEXT,
 } from '../../lib/constants/recovery';
-import { recoveryNotificationSchema, recoveryReplySchema, type RecoveredEntry } from '../../lib/recovery/schemas';
+import {
+  recoveryImageReplySchema, recoveryNotificationSchema, recoveryReplySchema, type RecoveredEntry,
+} from '../../lib/recovery/schemas';
+import type { Diagram, DiagramImage } from '../../lib/report';
 import { readRecoveryCache } from '../../lib/recovery/cache';
 import type { DestinationTarget } from '../../lib/destination/schemas';
-import { renderMetadata, renderSource } from './fields';
+import { renderMetadata, renderReport, renderSource } from './fields';
+
+// A published image is asked for by the record that names it. The service returns only bytes that match the
+// recovered report, and they are rendered from their own data URL.
+function published(path: string): (diagram: Diagram) => Promise<DiagramImage> {
+  return async diagram => {
+    const reply = recoveryImageReplySchema.parse(await browser.runtime.sendMessage({
+      type: RECOVERY_MESSAGE.image, path, name: diagram.name,
+    }));
+    if (!reply.ok) throw new Error(reply.error);
+    return reply.image;
+  };
+}
 
 function render(entry: RecoveredEntry): HTMLElement {
   const article = document.createElement('article');
@@ -27,8 +43,33 @@ function render(entry: RecoveredEntry): HTMLElement {
         [PROGRESS_TEXT.hashLabel]: entry.metadata.sourceHash,
         [PROGRESS_TEXT.submittedLabel]: entry.metadata.submittedAt,
         [PROGRESS_TEXT.observedLabel]: entry.metadata.observedAt,
+        ...entry.metadata.reportHash !== undefined
+          ? { [REPORT_TEXT.publishedLabel]: REPORT_TEXT.publishedValue(entry.metadata.reportHash) }
+          : {},
       };
       article.append(renderMetadata(values));
+      // Accepted records published before they carried a report have none to show.
+      if (entry.report) {
+        article.append(renderReport(entry.report, {
+          problemId: entry.metadata.problemId, images: null, request: published(entry.path),
+        }));
+      }
+      break;
+    }
+    case RECOVERY_ENTRY.failed: {
+      heading.textContent = PROGRESS_TEXT.problemHeading(entry.metadata.problemId);
+      state.textContent = RECOVERY_TEXT.failed;
+      state.className = 'failed';
+      article.append(renderMetadata({
+        [PROGRESS_TEXT.attemptLabel]: entry.metadata.attemptId,
+        [PROGRESS_TEXT.outcomeLabel]: VERDICT_LABEL[entry.metadata.outcome],
+        [PROGRESS_TEXT.hashLabel]: entry.metadata.sourceHash,
+        [PROGRESS_TEXT.submittedLabel]: entry.metadata.submittedAt,
+        [PROGRESS_TEXT.observedLabel]: entry.metadata.observedAt,
+        [REPORT_TEXT.publishedLabel]: REPORT_TEXT.publishedValue(entry.metadata.reportHash),
+      }), renderReport(entry.report, {
+        problemId: entry.metadata.problemId, images: null, request: published(entry.path),
+      }));
       break;
     }
     case RECOVERY_ENTRY.imported: {
@@ -94,6 +135,7 @@ export function initializeRecovery(): void {
           const items = state.snapshot.entries;
           ui.status.textContent = RECOVERY_TEXT.summary(
             items.filter(item => item.state === RECOVERY_ENTRY.recorded).length,
+            items.filter(item => item.state === RECOVERY_ENTRY.failed).length,
             items.filter(item => item.state === RECOVERY_ENTRY.imported).length,
             items.filter(item => item.state === RECOVERY_ENTRY.unverified).length,
           );

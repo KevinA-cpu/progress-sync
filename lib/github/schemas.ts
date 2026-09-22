@@ -62,6 +62,26 @@ export const sessionSchema = z.discriminatedUnion('status', [
 ]);
 export type AuthSession = z.infer<typeof sessionSchema>;
 
+// Only the access token and the metadata needed to revalidate it are kept; no refresh token, no device code.
+export const rememberedConnectionSchema = z.strictObject({
+  schemaVersion: z.literal(1),
+  connectionId: z.uuid(),
+  clientId: clientIdSchema,
+  token: tokenSchema,
+  expiresAt: z.iso.datetime(),
+  rememberedAt: z.iso.datetime(),
+  user: githubUserSchema,
+});
+export type RememberedConnection = z.infer<typeof rememberedConnectionSchema>;
+export const rememberPreferenceSchema = z.strictObject({
+  schemaVersion: z.literal(1), enabled: z.boolean(), consentedAt: z.iso.datetime().nullable(),
+}).refine(preference => !preference.enabled || preference.consentedAt !== null);
+export type RememberPreference = z.infer<typeof rememberPreferenceSchema>;
+export const rememberViewSchema = z.strictObject({
+  enabled: z.boolean(), stored: z.boolean(), expiresAt: z.iso.datetime().nullable(), issue: issueSchema.nullable(),
+});
+export type RememberView = z.infer<typeof rememberViewSchema>;
+
 export const authStateSchema = z.discriminatedUnion('status', [
   disconnectedSchema,
   z.strictObject({ status: z.literal(AUTH_STATUS.unavailable), issue: issueSchema }),
@@ -81,10 +101,14 @@ export const authRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal(AUTH_MESSAGE.cancel), attemptId: z.uuid(), issue: issueSchema }),
   z.strictObject({ type: z.literal(AUTH_MESSAGE.disconnect) }),
   z.strictObject({ type: z.literal(AUTH_MESSAGE.check) }),
+  // Enabling carries the acknowledgement explicitly; nothing infers consent from an earlier answer.
+  z.strictObject({
+    type: z.literal(AUTH_MESSAGE.remember), enabled: z.boolean(), consentAcknowledged: z.boolean(),
+  }),
 ]);
 export type AuthRequest = z.infer<typeof authRequestSchema>;
 export const authReplySchema = z.discriminatedUnion('ok', [
-  z.strictObject({ ok: z.literal(true), state: authStateSchema }),
+  z.strictObject({ ok: z.literal(true), state: authStateSchema, remember: rememberViewSchema }),
   z.strictObject({ ok: z.literal(false), error: issueSchema }),
 ]);
 export type AuthReply = z.infer<typeof authReplySchema>;

@@ -38,12 +38,32 @@ test('editing while grading cannot change the submitted source or its byte hash'
   )).toBeVisible();
 });
 
+test('records a failed submission as failed despite a historical solved badge', async ({
+  extensionContext, problem, progress,
+}) => {
+  await extensionContext.route('**/runsim.php', route => route.fulfill({
+    contentType: 'text/html', body: successPage.replace('Status: Success!', 'Status: Incorrect'),
+  }));
+  await problem.locator('#historical-status').evaluate(node => {
+    node.textContent = 'Status: Success!';
+  });
+  await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
+  await problem.getByRole('button', { name: 'Submit', exact: true }).click();
+
+  await expect(progress.getByText('Incorrect - not saved to GitHub', { exact: true })).toBeVisible();
+  await expect(progress.getByText('Accepted locally - not saved to GitHub', { exact: true }))
+    .toHaveCount(0);
+  await expect(progress.getByRole('heading', { name: 'Submission report', exact: true })).toBeVisible();
+  await expect(progress.getByText('Status: Incorrect', { exact: true })).toBeVisible();
+  await expect(progress.getByText(
+    'No compiler or simulator messages were stated by this result.', { exact: true },
+  )).toBeVisible();
+  // This result drew nothing, which is stated as such rather than as diagrams being unsupported.
+  await expect(progress.getByText('This result drew no timing diagram.', { exact: true })).toBeVisible();
+  await expect(progress.getByRole('textbox', { name: 'Submitted source' })).toHaveValue(submittedSource);
+});
+
 for (const scenario of [
-  {
-    name: 'a failed submission despite a historical solved badge',
-    response: successPage.replace('Status: Success!', 'Status: Incorrect'),
-    explanation: 'HDLBits did not accept this submission.',
-  },
   {
     name: 'a result for a different problem',
     response: successPage.replaceAll('step_one', 'zero'),
@@ -104,8 +124,7 @@ test('a learner can correct a failed submission without reloading the problem', 
   await problem.getByRole('textbox', { name: 'Solution' })
     .fill(submittedSource.replace("1'b1", "1'b0"));
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
-  await expect(progress.getByText('HDLBits did not accept this submission.', { exact: false }))
-    .toBeVisible();
+  await expect(progress.getByText('Incorrect - not saved to GitHub', { exact: true })).toBeVisible();
   await problem.getByRole('textbox', { name: 'Solution' }).fill(submittedSource);
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
 

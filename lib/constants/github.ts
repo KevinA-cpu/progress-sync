@@ -1,5 +1,10 @@
 export const AUTH_SESSION_KEY = 'github-connection-v1';
+export const AUTH_REMEMBER_KEY = 'github-remembered-connection-v1';
+export const AUTH_REMEMBER_PREFERENCE_KEY = 'github-remember-preference-v1';
 export const AUTH_EXPIRY_ALARM = 'github-connection-expiry';
+export const AUTH_RESTORE_ALARM = 'github-connection-restore';
+// A restore that failed for a transient reason keeps the credential and is retried on a bounded schedule.
+export const AUTH_RESTORE_RETRY = { delayMs: 5 * 60 * 1000, maxAttempts: 4 } as const;
 export const GITHUB_ORIGIN = 'https://github.com';
 export const GITHUB_API_ORIGIN = 'https://api.github.com';
 export const GITHUB_HOST_MATCH = `${GITHUB_ORIGIN}/*`;
@@ -51,6 +56,7 @@ export const AUTH_MESSAGE = {
   cancel: 'github:cancel',
   disconnect: 'github:disconnect',
   check: 'github:check',
+  remember: 'github:remember',
 } as const;
 
 export const AUTH_ISSUE = {
@@ -70,6 +76,10 @@ export const AUTH_ISSUE = {
   expiringTokensRequired: 'expiring-tokens-required',
   invalidSession: 'invalid-session',
   notAllowed: 'not-allowed',
+  rememberUnavailable: 'remember-unavailable',
+  rememberUnreadable: 'remember-unreadable',
+  restoreIncomplete: 'restore-incomplete',
+  restoreUnauthorized: 'restore-unauthorized',
 } as const;
 
 export const OAUTH_ERROR = {
@@ -98,6 +108,12 @@ export const AUTH_MESSAGES = {
   [AUTH_ISSUE.expiringTokensRequired]: 'Enable expiring user access tokens in the GitHub App settings, then reconnect.',
   [AUTH_ISSUE.invalidSession]: 'Stored GitHub connection data was invalid and has been cleared. Connect again.',
   [AUTH_ISSUE.notAllowed]: 'This GitHub connection request is no longer permitted.',
+  [AUTH_ISSUE.rememberUnavailable]: 'The remembered connection could not be stored on this device. It is not being kept.',
+  [AUTH_ISSUE.rememberUnreadable]: 'Remembered connection data is present in this browser profile but could not be read, '
+    + 'so it is not being used and nothing was resumed. It has not been treated as "off" or as absent. Connect again, or '
+    + 'turn remembering off, to replace it.',
+  [AUTH_ISSUE.restoreIncomplete]: 'The remembered connection could not be checked with GitHub yet. It is still kept and will be checked again; nothing has resumed.',
+  [AUTH_ISSUE.restoreUnauthorized]: 'The remembered connection is no longer authorized for the repository that was selected. Nothing was resumed or redirected. Connect and verify the destination again.',
 } satisfies Record<(typeof AUTH_ISSUE)[keyof typeof AUTH_ISSUE], string>;
 
 export const AUTH_TEXT = {
@@ -116,6 +132,22 @@ export const AUTH_TEXT = {
   expiryUnchecked: 'Progress Sync: GitHub session expiry could not be checked.',
   deprecatedApi: 'Progress Sync: GitHub reported an API deprecation.',
   writeRejected: 'GitHub rejected this write request.',
+  rememberLabel: 'Remember GitHub on this device',
+  // Shown next to the control itself: ticking it is the consent, so the consequences are stated here.
+  rememberConsent: 'Off by default. Turning this on writes the expiring GitHub access token to this browser profile’s '
+    + 'extension storage on disk, so the connection survives closing Chrome. It is kept only until the original expiry '
+    + 'GitHub already issued; it is never renewed or extended, and no refresh token is kept. After a restart Progress Sync '
+    + 're-checks the account and the exact selected repository and branch before anything resumes; queued work can then '
+    + 'publish to your public repository without you connecting again. Anyone with access to this Windows account and '
+    + 'browser profile can use that credential until it expires. Turning it off, disconnecting, expiry, or GitHub rejecting '
+    + 'it clears the stored copy.',
+  rememberOff: 'Not remembered. The connection ends when Chrome closes.',
+  rememberBlocked: 'This device cannot store a remembered connection. The connection ends when Chrome closes.',
+  rememberFailed: 'Progress Sync: the remembered GitHub connection could not be updated.',
+  restoreFailed: 'Progress Sync: the remembered GitHub connection could not be restored.',
+  remembered: (expiresAt: string) =>
+    `Remembered on this device until the original expiry at ${expiresAt}. Not renewed or extended.`,
+  rememberPending: 'Remembered on this device. It applies the next time you connect.',
   connected: (login: string) => `Connected as ${login}`,
   connectionDetails: (verifiedAt: string, expiresAt: string) =>
     `Identity verified at ${verifiedAt}. Session expires at ${expiresAt}.`,

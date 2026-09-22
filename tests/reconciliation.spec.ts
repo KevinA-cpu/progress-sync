@@ -54,7 +54,7 @@ for (const scenario of [
     await expect(progress.getByRole('region', { name: 'Captured attempts' }).getByText('Saved to GitHub', { exact: true })).toBeVisible();
     expect(server.updates).toBe(1);
     if (candidate) expect(server.head).toBe(candidate.commitSha);
-    expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(2);
+    expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(3);
     expect([...server.files.values()]).toContain(submittedBytes);
     const writes = server.writes.length;
     await progress.evaluate(async () => {

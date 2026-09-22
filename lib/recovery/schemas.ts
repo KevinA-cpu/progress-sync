@@ -3,8 +3,12 @@ import {
   MAX_ENCODED_BLOB_CHARACTERS, MAX_REMOTE_PATH_LENGTH, RECOVERY_ENTRY, RECOVERY_ISSUE, RECOVERY_MESSAGE, RECOVERY_STATUS, RECOVERY_TEXT,
 } from '../constants/recovery';
 import { MAX_TREE_ENTRIES } from '../constants/delivery';
-import { GITHUB_CONTENT } from '../constants/github';
-import { acceptanceRecordSchema, gitShaSchema, gitTreeSchema } from '../delivery/schemas';
+import { DIAGRAM_NAME_PATTERN, MAX_DIAGRAM_BYTES } from '../constants/report';
+import { githubBase64CharacterLimit, GITHUB_CONTENT } from '../constants/github';
+import { diagramImageSchema } from '../report';
+import {
+  acceptanceRecordSchema, failedRecordSchema, gitShaSchema, gitTreeSchema, reportRecordSchema,
+} from '../delivery/schemas';
 import { destinationTargetSchema } from '../destination/schemas';
 import { importRecordSchema } from '../import/schemas';
 import { submittedSourceSchema } from '../progress';
@@ -25,12 +29,24 @@ export const remoteBlobSchema = z.object({
   sha: gitShaSchema, size: z.int().nonnegative(), encoding: z.literal(GITHUB_CONTENT.base64),
   content: z.string().max(MAX_ENCODED_BLOB_CHARACTERS),
 });
+// One file read by path: a regular file, base64, and no larger than a stored image may be.
+export const remoteFileSchema = z.object({
+  type: z.literal(GITHUB_CONTENT.file), encoding: z.literal(GITHUB_CONTENT.base64),
+  size: z.int().nonnegative().max(MAX_DIAGRAM_BYTES), sha: gitShaSchema,
+  content: z.string().max(githubBase64CharacterLimit(MAX_DIAGRAM_BYTES)),
+});
 const recoveryIssueSchema = z.enum(RECOVERY_ISSUE);
 export type RecoveryIssue = z.infer<typeof recoveryIssueSchema>;
 export const recoveredEntrySchema = z.discriminatedUnion('state', [
   z.strictObject({
     state: z.literal(RECOVERY_ENTRY.recorded), path: remotePathSchema,
-    source: submittedSourceSchema, metadata: acceptanceRecordSchema,
+    // Accepted records published before they carried a report have none; those recover unchanged.
+    source: submittedSourceSchema, metadata: acceptanceRecordSchema, report: reportRecordSchema.optional(),
+  }),
+  // A failed record carries its own metadata file and its report; it is counted and labelled as failed.
+  z.strictObject({
+    state: z.literal(RECOVERY_ENTRY.failed), path: remotePathSchema,
+    source: submittedSourceSchema, metadata: failedRecordSchema, report: reportRecordSchema,
   }),
   // An imported record is recovered as its own state; it never claims acceptance, whatever its metadata says.
   z.strictObject({
@@ -60,11 +76,17 @@ export const recoveryStateSchema = z.discriminatedUnion('status', [
   }),
 ]);
 export type RecoveryState = z.infer<typeof recoveryStateSchema>;
+// An image is asked for by the record it belongs to and the name the report gives it, never by an arbitrary
+// path, so nothing the page sends can turn into a request for some other file.
+export const recoveryImageRequestSchema = z.strictObject({
+  type: z.literal(RECOVERY_MESSAGE.image), path: remotePathSchema, name: z.string().regex(DIAGRAM_NAME_PATTERN),
+});
 export const recoveryRequestSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal(RECOVERY_MESSAGE.list) }),
   z.strictObject({
     type: z.literal(RECOVERY_MESSAGE.refresh), expectedConnectionId: z.uuid(), expectedSelectionId: z.uuid(),
   }),
+  recoveryImageRequestSchema,
 ]);
 export const recoveryReplySchema = z.discriminatedUnion('ok', [
   z.strictObject({
@@ -72,6 +94,11 @@ export const recoveryReplySchema = z.discriminatedUnion('ok', [
   }),
   z.strictObject({ ok: z.literal(false), error: z.string() }),
 ]);
+export const recoveryImageReplySchema = z.discriminatedUnion('ok', [
+  z.strictObject({ ok: z.literal(true), image: diagramImageSchema }),
+  z.strictObject({ ok: z.literal(false), error: z.string() }),
+]);
+export type RecoveryImageReply = z.infer<typeof recoveryImageReplySchema>;
 export const recoveryNotificationSchema = z.strictObject({ type: z.literal(RECOVERY_MESSAGE.changed) });
 export type RecoveryReply = z.infer<typeof recoveryReplySchema>;
 export class RecoveryFault extends Error {

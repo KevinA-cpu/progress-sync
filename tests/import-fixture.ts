@@ -17,12 +17,25 @@ export interface StoredSubmission {
   loadBody?: string;
 }
 
+// One row of the learner's own statistics table: original synthetic markup, not a copy of the site's page.
+export interface StatsRow {
+  problemId: string;
+  successes: number;
+  failures?: number;
+  href?: string;
+}
+
 export interface ImportFixture {
   // Problem ids the currently served pages badge as solved.
   solved: string[];
   stored: Map<string, StoredSubmission | null>;
   missingPages: Set<string>;
   pageReads: string[];
+  // null serves the statistics page as unavailable, so discovery falls back to the navigation list.
+  stats: StatsRow[] | null;
+  statsMarkup: string | null;
+  statsStatus: number;
+  statsReads: number;
   loads: Array<{ problemId: string; submissionId: string }>;
   credentialHeaders: string[];
   loadGate: Promise<void> | null;
@@ -38,6 +51,27 @@ export const editorTemplate = '// Starter template. Not a stored submission.\n';
 function escape(value: string): string {
   return value.replace(/[&<>"]/g, character =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[character] ?? character);
+}
+
+// A representative statistics page: a header row naming its columns, a rate column that must not be mistaken
+// for the success count, and one row per problem the learner attempted.
+function statsPage(rows: StatsRow[]): string {
+  const body = rows.map(row => {
+    const attempts = row.successes + (row.failures ?? 0);
+    const rate = attempts === 0 ? '0%' : `${Math.round((row.successes / attempts) * 100)}%`;
+    const href = row.href ?? `/wiki/${escape(row.problemId)}`;
+    return `<tr><td><a href="${escape(href)}">${escape(row.problemId)}</a></td>`
+      + `<td>${attempts}</td><td>${row.successes}</td><td>${row.failures ?? 0}</td><td>${rate}</td></tr>`;
+  }).join('');
+  return `<!doctype html>
+<html lang="en"><head><title>Statistics - HDLBits</title></head><body>
+  <h1>Your statistics</h1>
+  <table id="summary"><tr><th>Account</th><th>Joined</th></tr><tr><td>fixture-learner</td><td>2026-01-01</td></tr></table>
+  <table id="per-problem">
+    <thead><tr><th>Problem</th><th>Attempts</th><th>Successes</th><th>Failures</th><th>Success rate</th></tr></thead>
+    <tbody>${body}</tbody>
+  </table>
+</body></html>`;
 }
 
 function page(problemId: string, server: ImportFixture): string {
@@ -96,6 +130,10 @@ export async function importFixture(context: BrowserContext, stored: Record<stri
     stored: new Map(Object.entries(stored)),
     missingPages: new Set(),
     pageReads: [],
+    stats: null,
+    statsMarkup: null,
+    statsStatus: 200,
+    statsReads: 0,
     loads: [],
     credentialHeaders: [],
     loadGate: null,
@@ -125,6 +163,14 @@ export async function importFixture(context: BrowserContext, stored: Record<stri
         // The site's own handler reads data only for status 2.
         body: entry.loadBody ?? JSON.stringify({ status: entry.status ?? 2, data: entry.source ?? importedSource }),
       });
+    }
+    if (url.pathname === '/wiki/Special:VlgStats/Me') {
+      server.statsReads++;
+      const markup = server.statsMarkup ?? (server.stats === null ? null : statsPage(server.stats));
+      if (markup === null || server.statsStatus !== 200) {
+        return route.fulfill({ status: server.statsStatus === 200 ? 404 : server.statsStatus, body: 'Not found' });
+      }
+      return route.fulfill({ contentType: 'text/html', body: markup });
     }
     if (!url.pathname.startsWith('/wiki/')) return route.fallback();
     const problemId = decodeURIComponent(url.pathname.slice('/wiki/'.length)).toLowerCase();

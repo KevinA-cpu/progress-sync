@@ -126,6 +126,7 @@ for (const loss of ['authorization', 'contents permission'] as const) {
     expect(server.files.get('README.md')).toBe('Keep this learner file.\n');
     expect([...server.files.keys()].filter(path => path.startsWith('progress/')).sort()).toEqual([
       `progress/hdlbits/step_one/${original.id}/acceptance.json`,
+      `progress/hdlbits/step_one/${original.id}/report.json`,
       `progress/hdlbits/step_one/${original.id}/solution.v`,
     ]);
     expect(server.files.get(`progress/hdlbits/step_one/${original.id}/solution.v`)).toBe(submittedBytes);

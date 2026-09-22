@@ -6,9 +6,11 @@ import {
 import { DESTINATION_STORAGE_PREFIX } from '../../lib/constants/destination';
 import { AUTH_SESSION_KEY } from '../../lib/constants/github';
 import {
-  IMPORT_DISCOVERY_KEY, IMPORT_LIMIT, IMPORT_MESSAGE, IMPORT_MESSAGES, IMPORT_STATUS, IMPORT_STOP, IMPORT_TEXT,
+  IMPORT_DISCOVERY_KEY, IMPORT_LIMIT, IMPORT_MESSAGE, IMPORT_MESSAGES, IMPORT_SOURCE, IMPORT_STATUS, IMPORT_STOP,
+  IMPORT_TEXT,
 } from '../../lib/constants/import';
 import { PROGRESS_TEXT } from '../../lib/constants/progress';
+import { REPORT_TEXT } from '../../lib/constants/report';
 import { importedJobSnapshot, type DeliveryJob } from '../../lib/delivery/schemas';
 import {
   importJobId, importReplySchema, type ImportCandidate, type ImportDiscovery,
@@ -51,11 +53,12 @@ function stateText(job: DeliveryJob | undefined): string {
 
 export function initializeImports(): void {
   const status = document.querySelector<HTMLParagraphElement>('#import-status');
+  const source = document.querySelector<HTMLParagraphElement>('#import-source');
   const list = document.querySelector<HTMLElement>('#imports');
   const discover = document.querySelector<HTMLButtonElement>('#discover-imports');
   const cancel = document.querySelector<HTMLButtonElement>('#cancel-imports');
-  if (!status || !list || !discover || !cancel) throw new Error(IMPORT_TEXT.interfaceIncomplete);
-  const ui = { status, list, discover, cancel };
+  if (!status || !source || !list || !discover || !cancel) throw new Error(IMPORT_TEXT.interfaceIncomplete);
+  const ui = { status, source, list, discover, cancel };
   let generation = 0;
   let populated = false;
 
@@ -68,6 +71,10 @@ export function initializeImports(): void {
     state.className = 'unverified';
     state.textContent = stateText(job);
     article.append(heading, state, renderMetadata(candidateMetadata(candidate)));
+    // An import is a stored solution, not an observed grading run, so it carries no report artifacts at all.
+    const artifacts = document.createElement('p');
+    artifacts.textContent = REPORT_TEXT.importedNoDiagrams;
+    article.append(artifacts);
     if (job) article.append(...renderJob(job, state, context));
     article.append(renderSource(IMPORT_TEXT.sourceLabel, candidate.source));
     const selection = context.selection;
@@ -171,6 +178,9 @@ export function initializeImports(): void {
         skipped.textContent = IMPORT_TEXT.skipped(failure.problemId, IMPORT_MESSAGES[failure.reason]);
         ui.list.append(skipped);
       }
+      // Which list was read decides which problems could be seen at all, so a finished pass says where it looked.
+      ui.source.textContent = !state || state.status === IMPORT_STATUS.running || !state.source ? ''
+        : state.source === IMPORT_SOURCE.stats ? IMPORT_TEXT.fromStats : IMPORT_TEXT.fromNavigation;
       ui.status.textContent = summarize(state);
       ui.status.className = state?.status === IMPORT_STATUS.failed ? 'unverified' : '';
       ui.discover.disabled = running;
@@ -178,6 +188,7 @@ export function initializeImports(): void {
     } catch (error) {
       if (current !== generation) return;
       ui.list.replaceChildren();
+      ui.source.textContent = '';
       ui.status.textContent = error instanceof Error ? error.message : IMPORT_TEXT.readFailed;
       ui.status.className = 'unverified';
       ui.discover.disabled = false;

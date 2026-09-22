@@ -13,6 +13,14 @@ import {
   DestinationFault, destinationRequestSchema, journalSchema, type DestinationJournal,
   destinationTargetSchema, sameDestination, type DestinationReply, type DestinationTarget, type DestinationView, type Installation,
 } from './schemas';
+import { PUBLICATION_LAYOUT } from '../constants/delivery';
+
+export interface PublicationPolicy {
+  layout: (typeof PUBLICATION_LAYOUT)[keyof typeof PUBLICATION_LAYOUT];
+  provider: string | null;
+  publishFailed: boolean;
+  publishFailedSince: string | null;
+}
 
 export function createDestinationService(github: GithubService) {
   let queue: Promise<unknown> = Promise.resolve();
@@ -45,6 +53,17 @@ export function createDestinationService(github: GithubService) {
     });
     if (!parsed.success) throw new DestinationFault(DESTINATION_ISSUE.selectionRequired);
     return parsed.data;
+  }
+  // What this destination accepts and where new records go. A destination that never chose keeps the
+  // provider-first layout every existing repository already uses, and publishes nothing failed.
+  async function publicationPolicy(session: ConnectedSession): Promise<PublicationPolicy> {
+    const journal = await readJournal(session.user.id);
+    const layout = journal?.layout ?? PUBLICATION_LAYOUT.legacy;
+    const publishFailed = journal?.publishFailed === true && journal.publishFailedSince !== undefined;
+    return {
+      layout, provider: journal?.layoutProvider ?? null, publishFailed,
+      publishFailedSince: publishFailed ? journal?.publishFailedSince ?? null : null,
+    };
   }
   async function guardSelection(session: ConnectedSession, target: DestinationTarget): Promise<void> {
     const current = await selection(session);
@@ -128,6 +147,37 @@ export function createDestinationService(github: GithubService) {
       switch (input.type) {
         case DESTINATION_MESSAGE.load:
           return { ok: true, view: view() };
+        // A layout is a local policy for future saves: it writes no repository file and moves nothing already
+        // published, so it is applied to the verified destination without reverifying it.
+        case DESTINATION_MESSAGE.layout: {
+          const target = await selection(session);
+          if (!journal || journal.operationId !== target.operationId) {
+            throw new DestinationFault(DESTINATION_ISSUE.selectionRequired);
+          }
+          await guard();
+          journal = {
+            ...journal, layout: input.layout, layoutProvider: input.provider,
+            layoutChosenAt: new Date().toISOString(),
+          };
+          await save(journal);
+          return { ok: true, view: view(true) };
+        }
+        // Automatic publication of failed attempts is a local setting on the verified destination. Turning it
+        // on takes effect from now on only; it publishes nothing already captured and rewrites no repository file.
+        case DESTINATION_MESSAGE.failed: {
+          if (input.publishFailed && !input.publicConfirmed) throw new DestinationFault(DESTINATION_ISSUE.invalidInput);
+          const target = await selection(session);
+          if (!journal || journal.operationId !== target.operationId) {
+            throw new DestinationFault(DESTINATION_ISSUE.selectionRequired);
+          }
+          await guard();
+          const { publishFailedSince: _previous, ...rest } = journal;
+          journal = input.publishFailed
+            ? { ...rest, publishFailed: true, publishFailedSince: new Date().toISOString() }
+            : { ...rest, publishFailed: false };
+          await save(journal);
+          return { ok: true, view: view(true) };
+        }
         case DESTINATION_MESSAGE.discard: {
           await guard();
           await browser.storage.local.remove(key(user.id));
@@ -184,10 +234,21 @@ export function createDestinationService(github: GithubService) {
           } else if (input.branch && input.branch !== repo.default_branch) {
             throw new DestinationFault(DESTINATION_ISSUE.branchUnavailable);
           }
+          // A layout choice belongs to the repository it was made for: reconnecting that same repository keeps
+          // it, and any other repository starts at the default rather than inheriting it. Automatic publication
+          // of failed attempts is deliberately not retained: reconnecting leaves it off until it is chosen again.
+          const retained = journal?.repositoryId === repo.id && journal.clientId === session.clientId
+            && journal.owner === session.user.login && journal.layout
+            ? {
+              layout: journal.layout,
+              ...(journal.layoutProvider === undefined ? {} : { layoutProvider: journal.layoutProvider }),
+              ...(journal.layoutChosenAt === undefined ? {} : { layoutChosenAt: journal.layoutChosenAt }),
+            }
+            : {};
           journal = {
             ...journalFor(session, installation, input.name),
             repositoryId: repo.id, phase: DESTINATION_PHASE.created, branch: isEmpty ? null : selectedBranch,
-            initializationAuthorized,
+            initializationAuthorized, ...retained,
           };
           await guard();
           await save(journal);
@@ -275,7 +336,7 @@ export function createDestinationService(github: GithubService) {
       return { ok: false, error: DESTINATION_ISSUE.networkError };
     }
   }
-  return { message, selection, guardSelection, pauseAfterFailure };
+  return { message, selection, publicationPolicy, guardSelection, pauseAfterFailure };
 }
 
 export type DestinationService = ReturnType<typeof createDestinationService>;

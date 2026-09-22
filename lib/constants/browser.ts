@@ -25,10 +25,11 @@ export const EXTENSION_PERMISSION = {
   alarms: 'alarms',
 } as const;
 
-export const DOM_EVENT = { click: 'click', pageHide: 'pagehide', abort: 'abort' } as const;
+export const DOM_EVENT = { click: 'click', change: 'change', pageHide: 'pagehide', abort: 'abort' } as const;
 export const UI_ROLE = { status: 'status', alert: 'alert' } as const;
 export const SDK_HOOK = { request: 'request' } as const;
 export const EXTENSION_DESCRIPTION = 'Record accepted HDLBits submissions and connect a GitHub session.';
 export const EXTENSION_ACTION_TITLE = 'Open Progress Sync';
 export const MINIMUM_CHROME_VERSION = '120';
 export const CONTENT_SCRIPT_RUN_AT = 'document_idle';
+export const DOCUMENT_READY = { loading: 'loading', interactive: 'interactive', complete: 'complete' } as const;

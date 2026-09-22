@@ -176,11 +176,28 @@ guidance without claiming a valid connection.
   `@octokit/oauth-methods` helpers with the GitHub App client type. We use these
   instead of the higher-level device strategy so waits are abortable and
   `slow_down` increases remain in effect for subsequent polls.
-- Only an expiring access token is retained in trusted-context-only
-  `chrome.storage.session`. Device codes and refresh tokens are not persisted.
-  No token is placed in local/synchronized storage, webpage/content-script
-  messages, logs, or exports.
+- Only an expiring access token is retained. Device codes and refresh tokens are
+  never persisted. By default the token lives in trusted-context-only
+  `chrome.storage.session` and ends with the browser session.
+  No token is placed in synchronized storage, webpage/content-script messages,
+  logs, or exports.
   Credential-bearing communication is confined to privileged extension contexts.
+- "Remember GitHub on this device" is off by default and can only be turned on
+  from the connection page, with the consent text shown at the moment of the
+  choice. While it is on, the same access token is also written to
+  trusted-context-only `chrome.storage.local`, so it survives a browser restart
+  until the original `expiresAt` GitHub issued. It is never renewed, extended, or
+  accompanied by a refresh token, and anyone with the Windows account and browser
+  profile can use it until it expires.
+- Restoring a remembered connection is read-only and never substitutes a target:
+  the client configuration, the original account, and the exact repository,
+  repository id, and branch that were already selected are revalidated before the
+  session is installed and before any queued delivery resumes. A rejected
+  credential, an expired one, a different account, a different client id, or a
+  destination that is no longer authorized withdraws the stored copy; being
+  unable to reach GitHub keeps it and retries on a bounded schedule. Turning the
+  option off and disconnecting withdraw it immediately, and a disable or
+  disconnect during a slow restore wins over the late response.
 - API calls omit website cookies, reject redirects, and are limited to the
   required GitHub authorization, user, installation, and repository operations. No client secret, App private
   key, broad OAuth `repo` scope, or general-purpose GitHub proxy is used.
@@ -253,6 +270,26 @@ repositories are rejected; a checkbox alone cannot silently adopt them. Existing
 repository visibility is never changed. This version supports only public
 repositories owned by the authenticated personal account, not organizations.
 
+### Layout for new saves
+
+A verified destination also carries the layout future saves use. It is chosen
+explicitly on the repository page and confirmed before it is stored; it is never
+inferred from the repository name, its contents, or its history.
+
+```text
+provider-first (default)   progress/hdlbits/<problem>/<attempt>/…  imports/hdlbits/…
+problem-first              <problem>/passed-<attempt>/  <problem>/failed-<attempt>/  <problem>/imported-<record>/
+```
+
+Provider-first remains the default, including for destinations that were set up
+before this choice existed, so nothing already published moves or is rewritten.
+Problem-first is dedicated to a single provider: a destination holding it rejects
+another provider's records rather than sharing the namespace. Changing the choice
+applies to later saves only. A delivery job takes its path and layout once, when
+it is created, and keeps them through retries, reconciliation, worker restart,
+and later settings changes. Recovery reads both layouts, and an existing marker
+or record is never overwritten by either.
+
 A trusted local setup journal records the intended account, App/installation,
 name, confirmed repository ID, operation phase, and branch. It is persisted before
 creation or initialization requests. The journal survives worker/browser restart
@@ -303,23 +340,29 @@ old jobs rather than redirecting them.
 An intake failure is recorded on its local accepted attempt; it does not disable
 subsequent capture or progress reads. No publication starts without the job write.
 
-Each accepted attempt adds two files:
+Each accepted attempt adds two files, plus a report and one file per captured
+timing diagram when the result produced them:
 
 ```text
 progress/hdlbits/<problem>/<attempt UUID>/solution.v
 progress/hdlbits/<problem>/<attempt UUID>/acceptance.json
+progress/hdlbits/<problem>/<attempt UUID>/report.json
+progress/hdlbits/<problem>/<attempt UUID>/diagram-1.png
 ```
 
 The source preserves the submitted UTF-8 bytes, including form-normalized CRLF
 line endings. The strict version-1 acceptance record contains `provider`,
 `problemId`, `attemptId`, `sourceHash` (SHA-256), `submittedAt`, `observedAt`, and
 `provenance: { capture: "browser-post", verdict: "success" }`. It does not include
-browser tab/document/request identifiers, diagnostics, credentials, problem
-statements, or diagrams. The source itself is learner-controlled; do not submit
-secrets or material you cannot publish.
+browser tab/document/request identifiers, diagnostics, credentials, or problem
+statements. Where a report was captured, the record also pins that report's
+SHA-256 and byte count, and the report itself names every published image with
+its exact byte count, media type, pixel dimensions, and SHA-256. The source
+itself is learner-controlled; do not submit secrets or material you cannot
+publish.
 
 Named Octokit Git Data methods create a tree based on the current branch's tree,
-add both files to a single-parent commit, and update the selected branch with
+add every file of the attempt to a single-parent commit, and update the selected branch with
 `force: false`. A changed head triggers bounded reconciliation and safe reapplication;
 an inconsistent existing attempt path blocks publication. Matching source bytes
 alone are not a delivery receipt. Truncated tree responses
@@ -502,6 +545,107 @@ action. This bounds conflict recovery within one invocation; it is separate from
 the bounded resumption schedule. Protection, permission, validation, and
 rate-limit failures never cause an unbounded retry loop.
 
+## Failed attempts and submission reports
+
+A correlated result is recorded with the outcome its status line states:
+accepted, incorrect, compile error, or simulation error. Anything the current
+result contract does not state — an unrecognized status line, a result that
+cannot be tied to the observed POST and its own document, a late or interrupted
+observation — stays **unverified**. An unverified result is never turned into a
+failed or an accepted record, and a historical solved badge is still not
+evidence of anything.
+
+A recorded attempt keeps the report observed with it, accepted ones included,
+in local storage: the provider's status line verbatim, whichever structured
+compiler/simulator messages the result contract exposes, each timing diagram the
+result drew as a static PNG, and a coverage note saying what the report does and
+does not contain. Instructional explanations, expected or reference output
+tables, test data, hidden sources, page markup, cookies, and URLs are not read
+and not stored. Report text is inert: it is bounded per message and in total,
+sanitized, never rendered as HTML, and no URL in a result is fetched. A report is
+refused rather than trimmed when it is malformed or oversized, and an attempt
+without a usable report stays unverified instead of being recorded as a failure.
+Imported records get no report and no diagrams at all; none is invented for them.
+
+### Timing diagrams
+
+A result states its verdict before it finishes drawing. The verdict is recorded
+immediately; diagrams and late messages are observed separately, by a mutation
+observer on the result document, and the report stays **pending** until that
+phase concludes. A relevant change — a chart inserted, replaced, resized, or
+relabelled, a warning block revealed — restarts a 1 s settle window. The whole
+phase is bounded at 8 s in the document and at a 12 s hold in the worker, after
+which the report states that a diagram was not captured in time. Nothing waits
+forever, nothing is published while pending, and a report is never mutated after
+its receipt.
+
+Each chart is rebuilt element by element into a standalone copy before anything
+renders it. Only the shapes a waveform is drawn from survive (`svg`, `g`, `defs`,
+`marker`, `symbol`, `clipPath`, `use`, `path`, `rect`, `line`, `polyline`,
+`polygon`, `circle`, `ellipse`, `text`, `tspan`) with an allow-listed attribute
+set; `script`, `style`, `a`, `image`, `filter`, and `foreignObject` have no entry
+and are dropped with their subtrees. Event handlers, external schemes, and
+`url()` references that do not name a surviving element of the same chart are
+refused. Presentation the page supplies through its own stylesheet is copied as
+resolved values so the image is not blank without it, and each value is checked
+like any other attribute. The copy is never inserted into a document, so nothing
+in it is resolved, fetched, or executed while it is built; no provider script is
+run, and no waveform source is evaluated.
+
+The copy is rasterized through a `data:` URL in an image's own static mode and
+drawn on an opaque background, then read back as PNG bytes and parsed as a byte
+structure: signature, every chunk length and CRC, an allow-listed chunk set, and
+the dimensions the header itself states. Bounds are 4 per attempt, 4000×2000 px,
+4 MP, 256 KiB per image, 512 KiB per attempt, and a storage ceiling well below
+the profile quota. A chart that is oversized, unsupported, unreadable from the
+canvas, rendered too late, or over budget is named in the report with its reason;
+none is dropped silently, and a report that stored nothing says so rather than
+reading as a result with no chart.
+
+Images are published in the same commit as the source, the record, and the
+report that names them, under the same per-attempt folder as `diagram-N.png`.
+The report pins each image's byte count, media type, pixel dimensions, and
+SHA-256, and the record pins the report. On recovery, an image whose bytes,
+size, dimensions, or hash do not match what the report states is reported as
+unverified rather than shown. Every diagram carries its attribution in the
+report: `HDLBits` as the source, and the canonical
+`https://hdlbits.01xz.net/wiki/<problem>` link, built from the validated problem
+id alone and never from a URL read out of a page or a remote record. HDLBits
+does not endorse this extension.
+
+Publishing failed work is off by default. **Publish new failed attempts and
+their reports automatically** can only be turned on for a verified public
+destination, with the public-visibility consent given at the moment of the
+choice. It applies from the moment it is turned on: attempts captured earlier
+stay local, and each of them can only reach GitHub through its own confirmed
+**Publish failed attempt and its report** action. Turning the setting on never
+publishes history in bulk, and turning it off stops later automatic publication
+without removing anything already published. Existing installations are not
+opted in.
+
+A published failed attempt adds three files, plus one per captured diagram:
+
+```text
+progress/hdlbits/<problem>/failed-<attempt UUID>/solution.v
+progress/hdlbits/<problem>/failed-<attempt UUID>/attempt.json
+progress/hdlbits/<problem>/failed-<attempt UUID>/report.json
+progress/hdlbits/<problem>/failed-<attempt UUID>/diagram-1.png
+```
+
+The strict version-1 failed record carries `kind: "failed"`, `accepted: false`,
+its outcome, the source hash and byte count, the report's own SHA-256 and byte
+count, timestamps, and capture provenance. It has its own folder prefix and its
+own file name, so no reader and no schema can mistake it for an acceptance: it
+cannot satisfy the acceptance schema, it is counted separately in recovery, and
+a record claiming acceptance, a missing report, or a report edited after
+publication is reported as unverified rather than promoted. All of its files are
+written in the same single commit through the same immutable transport,
+idempotency, reconciliation, backoff, account binding, retry, and discard path
+as accepted work; a partially written failed record cannot exist on the branch.
+Failed source is learner-controlled code that will be publicly readable — the
+same caution as accepted source applies, with the added fact that it did not
+pass.
+
 ## Retained work and local discard
 
 Disconnect and browser restart remove session credentials, not captured attempts,
@@ -554,6 +698,23 @@ shape, encoding, and size. The problem page serves that control empty and fills
 it from an inline list of its own stored submissions, so the fetched page is
 parsed detached and that list is read as text; no fetched script is ever run, and
 a page whose own entry states no stored success is skipped.
+
+Which problems are looked at comes from the learner's own HDLBits statistics
+page (`Special:VlgStats/Me`), read through that same open page and site session.
+Its table is read through its own header row, never by column position: the
+success column is the first header that names successes and is not a rate, a row
+counts only when one of its own links resolves to a problem page on this origin
+and its success cell holds a whole number. A page that presents no such table is
+left unused rather than guessed at, and the status line then says the pass fell
+back to the solved list the open page links to, which covers less. A row stating
+zero successes is counted but never read for source, so a problem with failed
+attempts only can never produce an imported record. Continuing a longer list
+needs the statistics page again; if it cannot be read, the pass stops and says
+so instead of counting against a list it did not see.
+
+HDLBits addresses a stored submission by its **save slot** on the problem page,
+and slot `0` is an ordinary slot, so it is labelled and recorded as a slot
+reference rather than as a unique submission identifier.
 
 Discovery is sequential and bounded, reports per-problem progress, and can be
 cancelled; a cancelled or interrupted scan keeps whatever it already found and
@@ -671,8 +832,11 @@ number of saved attempts scanned from the repository.
   normalization, rather than editor contents read after grading.
 - Its SHA-256 hash, provider/problem identity, attempt identity, timestamps,
   and request/result-document provenance.
-- A distinct waiting, accepted-locally, or unverified state. Accepted locally
-  **does not** mean backed up to GitHub.
+- A distinct waiting, accepted-locally, recorded-failed, or unverified state,
+  with the stated outcome for the first two. Accepted locally **does not** mean
+  backed up to GitHub, and neither does a recorded failure.
+- The submission report observed with that result: status line, supported
+  structured messages, and what the report does not cover.
 
 Records stay in trusted-context-only local extension storage. Accepted source is
 published only to an intentionally selected public destination. Local storage is not an encrypted vault;
@@ -788,6 +952,33 @@ grading certificate: a compromised provider or browser is outside this proof.
 - One discovery pass covers at most 100 solved problems and 2 MB of source, and
   a page listing more than 2000 solved problems is not enumerated at all.
   Continuing a longer list takes repeated passes.
+- **Timing diagrams are captured as images, within fixed limits.** What the
+  extension captures and publishes for an attempt is the submitted source, the
+  stated outcome, the status line, whichever structured compiler or simulator
+  messages the current result contract exposes, and up to 4 charts the result
+  drew, each rasterized to a static PNG within 4000×2000 px, 4 MP, 256 KiB per
+  image and 512 KiB per attempt. Charts the result does not finish within the
+  8 s observation window, or that exceed a limit or use an unsupported
+  structure, are named in the report with their reason instead of being
+  captured. Lesson explanations, expected or reference output tables, model
+  answers, and test vectors are never copied. Where the result states only a
+  status line, or drew nothing, the report says exactly that rather than
+  implying a clean run or an unsupported capability. Imported history comes
+  from the statistics page, so it carries no messages and no diagrams; none is
+  invented for it.
+- Publication waits for that observation to conclude, so a save can start up to
+  8 s after the verdict. While a result is still being observed the attempt says
+  so and offers no publish control; the recorded outcome itself is already
+  durable.
+- Failed publication is per-destination, opt-in, and forward-only. Attempts
+  captured before it was turned on are published one at a time through their own
+  confirmation, never in bulk, and nothing already published is removed when the
+  setting is turned off.
+- The layout choice applies to later saves only. Records already published keep
+  their paths; there is no migration between layouts.
+- A remembered GitHub token lasts only until the original expiry GitHub issued
+  and is not renewed. While it is stored, anyone with this Windows account and
+  browser profile can act as that GitHub identity within the App's permissions.
 - Automatic resumption is local durability only. Undelivered jobs live in this
   browser profile; clearing extension storage, removing the extension, or losing
   the device loses them. Resumption also cannot outlast its bounded budget, run
@@ -1034,6 +1225,51 @@ denied session access from the HDLBits content-script world and rejected page
 messages are covered by the GitHub and concurrency tests instead. A third check
 requires the packaged App configuration to match the bundled source configuration
 exactly and to carry no credential value.
+
+Remember-access tests use the same real browser restart. They cover the
+session-only default, an opt-in restore that resumes only after its own
+destination revalidates, a destination that is no longer authorized, an
+unreachable GitHub and a refusal that is not a rejection both keeping the stored
+copy, a rejected credential, a credential past its original expiry, an identity
+that now answers as another account, turning the option off, disconnecting, a
+disable racing a slow restore, and a page other than the connection page trying
+to change the option. Each checks where the token is and is not, including
+synchronized storage, IndexedDB, page markup, and console output.
+
+Statistics-page tests drive the real discovery path over a controlled table read
+by its header, including a success-rate column that must not be mistaken for a
+count, a problem attempted many times and never passed, save slot `0`, a page
+with no readable table and a signed-out page that both fall back to the solved
+list, and a continuation whose statistics page has gone away. Layout tests cover
+explicit adoption after work was already published under the default, a queued
+job that keeps its original paths across the change, a repository dedicated to
+another provider refusing a record, an import keeping its identity under the new
+layout, and recovery reading a repository that holds both.
+
+Failed-attempt tests run the whole path: the setting publishing only from the
+moment it is turned on, an earlier failure needing its own confirmation, the
+exact source, record, and pinned report written in one commit, a delayed failure
+in one tab beside an acceptance in another, forged, malformed, and oversized
+reports, a result page carrying explanations and a waveform whose extra content
+must reach neither GitHub nor the interface, a confirmation for one kind of
+attempt refused for the other, and recovery reading a published failed record
+without ever counting it as an acceptance.
+
+Timing-diagram tests drive original waveforms built from the element types a
+result page draws with, and decode every stored image back to pixels rather than
+reading its label: a failed result publishing source, record, report, and image
+in one commit whose bytes match the hash, byte count, and dimensions the report
+states; a chart inserted after the verdict; a chart replaced and then restyled,
+each change restarting the settling window; a page that never stops redrawing,
+reported as not captured in time; more charts than are stored, kept in order with
+the rest named; an oversized chart refused; a chart carrying an external image, an
+`@import`, a `foreignObject`, a link, an event handler, and a script, stored as
+its drawing alone, with no request beyond the ones the page itself made and none
+of its payload in files, interface, or console; a compile failure that drew
+nothing; a worker restart mid-observation publishing once and stating the chart
+was not captured; two tabs keeping their own charts; and recovery of a published
+image, including a missing file, a file whose size contradicts the report, and
+bytes changed after publication.
 
 Coverage includes accepted bytes, post-submit edits and hashes, failed and stale
 results, ambiguous layouts and payloads, historical/forged observations,

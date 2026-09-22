@@ -11,10 +11,44 @@ export const RESULT_TIMEOUT_MS = 120_000;
 export const SOURCE_HASH_ALGORITHM = 'SHA-256';
 export const PROGRESS_PROVIDER = 'hdlbits';
 export const CAPTURE_PROVENANCE = 'browser-post';
-export const CAPTURE_STATE = { pending: 'pending', accepted: 'accepted', unverified: 'unverified' } as const;
-export const GRADING_VERDICT = { success: 'success', failure: 'failure', unknown: 'unknown' } as const;
-export const PROGRESS_MESSAGE = { result: 'hdlbits:result', list: 'progress:list' } as const;
+export const CAPTURE_STATE = {
+  pending: 'pending', accepted: 'accepted', failed: 'failed', unverified: 'unverified',
+} as const;
+// Every outcome the current result contract states. Anything else stays unknown and is never recorded as a
+// graded outcome.
+export const GRADING_VERDICT = {
+  success: 'success', incorrect: 'incorrect', compileError: 'compile-error',
+  simulationError: 'simulation-error', unknown: 'unknown',
+} as const;
+export const FAILED_VERDICT = [
+  GRADING_VERDICT.incorrect, GRADING_VERDICT.compileError, GRADING_VERDICT.simulationError,
+] as const;
+export type FailedVerdict = (typeof FAILED_VERDICT)[number];
+export type GradingVerdict = (typeof GRADING_VERDICT)[keyof typeof GRADING_VERDICT];
+export function isFailedVerdict(verdict: string): verdict is FailedVerdict {
+  return (FAILED_VERDICT as readonly string[]).includes(verdict);
+}
+// The verdict is reported as soon as the result document states it. Diagrams and late messages are reported
+// separately once the result stops changing, so a slow chart never delays or alters the recorded outcome.
+export const PROGRESS_MESSAGE = {
+  result: 'hdlbits:result', artifacts: 'hdlbits:artifacts', list: 'progress:list',
+} as const;
 export const HDL_SUCCESS_HEADING = 'Status: Success!';
+// The status line the provider prints is the whole of its stated verdict contract; nothing else on the result
+// page is read as a verdict.
+export const HDL_STATUS_HEADING = {
+  [HDL_SUCCESS_HEADING]: GRADING_VERDICT.success,
+  'Status: Incorrect': GRADING_VERDICT.incorrect,
+  'Status: Compile Error': GRADING_VERDICT.compileError,
+  'Status: Simulation Error': GRADING_VERDICT.simulationError,
+} as const satisfies Record<string, GradingVerdict>;
+export const VERDICT_LABEL = {
+  [GRADING_VERDICT.success]: 'Accepted',
+  [GRADING_VERDICT.incorrect]: 'Incorrect',
+  [GRADING_VERDICT.compileError]: 'Compile error',
+  [GRADING_VERDICT.simulationError]: 'Simulation error',
+  [GRADING_VERDICT.unknown]: 'Unknown',
+} as const satisfies Record<GradingVerdict, string>;
 
 export const PROGRESS_TEXT = {
   recordingFailed: 'Progress recording failed.',
@@ -25,6 +59,9 @@ export const PROGRESS_TEXT = {
   unmatchedResult: 'The result could not be tied to this submission. Reload and resubmit.',
   accepted: 'Accepted locally - not saved to GitHub',
   failed: 'HDLBits did not accept this submission.',
+  incompleteFailure: 'Failed attempts require complete source, result provenance, and a submission report.',
+  inconsistentReport: 'A submission report must state the status line its outcome was read from and attribute its diagrams to the same problem.',
+  outcomeLabel: 'Outcome',
   ambiguousResult: 'The grading result is unsupported or ambiguous. Reload and resubmit.',
   navigationReplaced: 'A different navigation replaced the submission result.',
   waiting: 'Waiting for the result - not saved to GitHub',
@@ -49,6 +86,9 @@ export const PROGRESS_TEXT = {
   empty: 'No captured attempts yet. Submit using the in-page HDLBits editor.',
   resultUnrecorded: 'Progress Sync: this result was not recorded as an accepted attempt.',
   resultUndelivered: 'Progress Sync: result observation could not be delivered.',
+  artifactsUndelivered: 'Progress Sync: diagram and message observation could not be delivered.',
+  artifactsPending: 'Reading the result diagrams and messages',
+  artifactsTimedOut: 'The result kept changing past the observation window. Its diagrams were not captured.',
   notYet: 'Not yet',
   unavailable: 'Unavailable',
   submittedSource: 'Submitted source',
@@ -59,6 +99,7 @@ export const PROGRESS_TEXT = {
   hashLabel: 'SHA-256 (submitted bytes)',
   captureLabel: 'Capture',
   problemHeading: (problemId: string | null) => `${PROGRESS_PROVIDER}:${problemId ?? 'unknown'}`,
+  failedLocally: (label: string) => `${label} - not saved to GitHub`,
   unverified: (reason: string) => `Unverified: ${reason}`,
   attemptCount: (count: number) => `${count} captured attempt${count === 1 ? '' : 's'}.`,
   resultTitle: (problemId: string) => `${problemId}: Simulation - HDLBits`,

@@ -3,6 +3,8 @@ import {
   DESTINATION_MESSAGE_PREFIX, DESTINATION_PHASE, MARKER_KIND,
 } from '../constants/destination';
 import { GITHUB_PERMISSION, REPOSITORY_SELECTION } from '../constants/github';
+import { PUBLICATION_LAYOUT } from '../constants/delivery';
+import { PROGRESS_PROVIDER } from '../constants/progress';
 import { z } from '../schema';
 import { clientIdSchema, githubUserSchema } from '../github/schemas';
 
@@ -13,6 +15,7 @@ export const branchNameSchema = z.string().min(1).max(255).refine(branch =>
   && !branch.startsWith('/') && !branch.endsWith('/') && !branch.endsWith('.')
   && branch !== '@' && branch.split('/').every(part =>
     part !== '' && !part.startsWith('.') && !part.endsWith('.lock')));
+export const layoutProviderSchema = z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/);
 export const markerSchema = z.strictObject({
   kind: z.literal(MARKER_KIND), schemaVersion: z.literal(1), initializationId: z.uuid(),
 });
@@ -47,6 +50,15 @@ export const journalSchema = z.strictObject({
   branch: branchNameSchema.nullable(), verifiedAt: z.iso.datetime().nullable(),
   selectedAt: z.iso.datetime().optional(),
   accessPaused: z.boolean().optional(),
+  // Absent in every destination saved before layouts were selectable, and read as the legacy layout.
+  // The scope names the provider the problem-first choice was made for; another provider is refused, not renamed.
+  layout: z.enum(PUBLICATION_LAYOUT).optional(),
+  layoutProvider: layoutProviderSchema.optional(),
+  layoutChosenAt: z.iso.datetime().optional(),
+  // Absent in every destination saved before failed attempts could be published, and read as off. The
+  // timestamp bounds the setting to attempts captured after it: enabling never reaches back over local history.
+  publishFailed: z.boolean().optional(),
+  publishFailedSince: z.iso.datetime().optional(),
   connectionId: z.uuid(), commitSha: z.string().nullable(),
 });
 export type DestinationJournal = z.infer<typeof journalSchema>;
@@ -84,6 +96,14 @@ export const destinationRequestSchema = z.discriminatedUnion('type', [
     type: z.literal(DESTINATION_MESSAGE.connect), name: repositoryNameSchema,
     installationId: z.int().positive(), branch: branchNameSchema.optional(), initialize: z.boolean(),
     expectedConnectionId: z.uuid(),
+  }),
+  z.strictObject({
+    type: z.literal(DESTINATION_MESSAGE.layout), layout: z.enum(PUBLICATION_LAYOUT),
+    provider: z.literal(PROGRESS_PROVIDER), layoutConfirmed: z.literal(true), expectedConnectionId: z.uuid(),
+  }),
+  z.strictObject({
+    type: z.literal(DESTINATION_MESSAGE.failed), publishFailed: z.boolean(),
+    publicConfirmed: z.boolean(), failedConfirmed: z.literal(true), expectedConnectionId: z.uuid(),
   }),
   z.strictObject({ type: z.literal(DESTINATION_MESSAGE.verify), expectedConnectionId: z.uuid() }),
   z.strictObject({ type: z.literal(DESTINATION_MESSAGE.discard), confirmed: z.literal(true), expectedConnectionId: z.uuid() }),

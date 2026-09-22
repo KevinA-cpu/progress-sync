@@ -19,6 +19,21 @@ export const IMPORT_LOAD_URL = `${HDL_ORIGIN}/load.php`;
 export const IMPORT_PROBLEM_URL = (problemId: string) => `${HDL_PROBLEM_PREFIX}${problemId}`;
 export const IMPORT_SELECT_SELECTOR = '#uiload_select';
 export const IMPORT_SOLVED_SELECTOR = '.hdlbits-stat-done';
+// Where the list of problems to read comes from. The navigation list only covers what the open page links to;
+// the learner's own statistics page covers every problem the site recorded an attempt for.
+export const IMPORT_SOURCE = { stats: 'stats', navigation: 'navigation' } as const;
+export const IMPORT_STATS_URL = `${HDL_ORIGIN}/wiki/Special:VlgStats/Me`;
+// The statistics table is read through its own header row, never by column position: the success column is the
+// first header naming successes and not a rate, a row is counted only when one of its own links resolves to a
+// problem page on this origin and its success cell holds a whole number, and a page that presents no such table
+// is left unused instead of guessed at.
+export const IMPORT_STATS_SUCCESS = /success/i;
+export const IMPORT_STATS_RATIO = /rate|percent|%|average/i;
+export const IMPORT_STATS_COUNT = /^[0-9]{1,9}$/;
+export const IMPORT_TABLE_SELECTOR = 'table';
+export const IMPORT_LINK_SELECTOR = 'a[href]';
+export const IMPORT_CELL_TAGS = ['TD', 'TH'];
+export const IMPORT_HEADER_TAG = 'TH';
 export const IMPORT_SUCCESS_LABEL = 'Last success';
 // The problem page serves the load control empty and fills it from an inline literal of the form
 // var d = [ ['<submission>','Last success',<epoch seconds>], ... ]; a null id or time means none is stored.
@@ -80,6 +95,7 @@ export const IMPORT_TEXT = {
   scanFailed: 'HDLBits could not be read. Nothing was imported.',
   progressFailed: 'What discovery read could not be saved, so it stopped. Nothing was imported or published.',
   tooManyProblems: 'This page lists more solved problems than Progress Sync can enumerate. Nothing was imported.',
+  statsUnavailable: 'Your HDLBits statistics page could not be read again, so this pass could not continue the list the earlier one was counted against. Nothing was imported. Find earlier solutions again to start a new pass.',
   readFailed: 'Import state could not be read.',
   operationFailed: 'Progress Sync: import operation did not complete.',
   unverified: 'Imported - unverified',
@@ -92,7 +108,9 @@ export const IMPORT_TEXT = {
   sourceLabel: 'Imported source (read-only)',
   claimLabel: 'Provider claim',
   claimValue: 'HDLBits stored last successful submission; a site claim, not an acceptance Progress Sync observed',
-  submissionLabel: 'Provider submission',
+  // HDLBits addresses a stored submission by its save slot on the problem page, and 0 is an ordinary slot.
+  // It is not a unique identifier for a submission across the site.
+  submissionLabel: 'Provider save slot',
   statusLabel: 'Provider status field',
   labelLabel: 'Provider timestamp text',
   bytesLabel: 'Imported bytes',
@@ -103,6 +121,8 @@ export const IMPORT_TEXT = {
   cancelled: (found: number, scanned: number) => `Discovery cancelled after ${scanned} problems. ${found} available to import.`,
   complete: (found: number, skipped: number) =>
     `${found} earlier solution${found === 1 ? '' : 's'} available to import; ${skipped} problem${skipped === 1 ? '' : 's'} skipped.`,
+  fromStats: 'Problems came from your HDLBits statistics page.',
+  fromNavigation: 'Problems came from the solved list on the open HDLBits page; your statistics page could not be read, so problems outside that list were not looked at.',
   remaining: (read: number, inventory: number) =>
     ` Read ${read} of ${inventory} solved problems; find earlier solutions again to continue with the rest.`,
   budgetStopped: (read: number, inventory: number) =>
@@ -118,5 +138,5 @@ export const IMPORT_TEXT = {
   noDestination: 'Select and verify a public progress repository before publishing an import.',
   invalidImport: 'Only a complete, validated import record can be published.',
   commitMessage: (provider: string, problem: string, submissionId: string) =>
-    `Record imported ${provider}:${problem} submission ${submissionId} (unverified)`,
+    `Record imported ${provider}:${problem} save slot ${submissionId} (unverified)`,
 } as const;

@@ -1,4 +1,5 @@
 import { GITHUB_ORIGIN } from './github';
+import { REPORT_FILE } from './report';
 
 export const DELIVERY_KEY = 'delivery-jobs-v1';
 export const DISCARDED_DELIVERY_KEY = 'discarded-deliveries-v1';
@@ -7,7 +8,8 @@ export const DELIVERY_THROTTLE_KEY = 'delivery-throttle-v1';
 export const DELIVERY_SCHEDULE_KEY = 'delivery-schedule-v1';
 export const DELIVERY_MESSAGE_PREFIX = 'delivery:';
 export const DELIVERY_MESSAGE = {
-  list: 'delivery:list', publish: 'delivery:publish', retry: 'delivery:retry', discard: 'delivery:discard',
+  list: 'delivery:list', publish: 'delivery:publish', publishFailed: 'delivery:publish-failed',
+  retry: 'delivery:retry', discard: 'delivery:discard',
 } as const;
 export const DELIVERY_STATE = {
   pending: 'pending', publishing: 'publishing', reconciling: 'reconciling', blocked: 'blocked', uncertain: 'uncertain', saved: 'saved',
@@ -35,6 +37,8 @@ export const MAX_PUBLICATION_REBASES = 2;
 export const DELIVERY_TEXT = {
   awaiting: 'Accepted - awaiting GitHub delivery',
   saved: 'Saved to GitHub',
+  awaitingFailed: 'Failed attempt - awaiting GitHub delivery',
+  savedFailed: 'Failed attempt saved to GitHub',
   retry: 'Check GitHub and retry delivery',
   reconciling: 'Checking the complete publication on GitHub...',
   reconciliationFailed: 'Publication outcome is uncertain. GitHub inspection failed or was interrupted. The job is retained; retry the check when access is restored.',
@@ -43,11 +47,17 @@ export const DELIVERY_TEXT = {
   invalidInput: 'Unsupported delivery operation or sender.',
   invalidData: 'Saved delivery data is invalid. It has not been overwritten.',
   invalidAttempt: 'Only a complete, validated accepted snapshot can be published.',
+  diagramsUnavailable: 'The timing diagram images this report names are no longer stored in this browser profile. Nothing was sent; the attempt and its report are retained.',
+  diagramsInvalid: 'The stored timing diagram images do not match the report that names them. Nothing was sent; no files were overwritten.',
+  pendingReport: 'This attempt is still being observed. Its report is not final, so nothing was sent.',
+  invalidFailedAttempt: 'Only a complete, validated failed snapshot with its submission report can be published.',
+  failedNotEnabled: 'Automatic publication of failed attempts is off for this destination. Publish this attempt explicitly, or turn the setting on for attempts from now on.',
   discarded: 'This local attempt was discarded and cannot be delivered again.',
   discardActive: 'Delivery is still active. Wait for it to settle, or disconnect GitHub before discarding local work. Already-issued requests may complete.',
   discardSaved: 'Only pending or unresolved local delivery work can be discarded here.',
   noDestination: 'Select and verify a public progress repository before publishing this attempt.',
   sessionChanged: 'The account or selected destination changed. This job has not been redirected.',
+  providerMismatch: 'This repository uses the problem-first layout for a different provider. Nothing was sent; choose a destination for this provider instead.',
   invalidResponse: 'GitHub returned an unsupported publication response.',
   existingPath: 'An attempt path already exists on GitHub but its source or metadata is incomplete or inconsistent. No files were overwritten.',
   headChanged: 'The branch changed during publication. No remote work was overwritten.',
@@ -80,16 +90,40 @@ export const DELIVERY_TEXT = {
   target: (owner: string, name: string, branch: string) => `Destination: ${owner}/${name} @ ${branch}`,
   select: (owner: string, name: string, branch: string) =>
     `Publish accepted attempt to ${owner}/${name} @ ${branch} (public)`,
+  selectFailed: (owner: string, name: string, branch: string) =>
+    `Publish failed attempt and its report to ${owner}/${name} @ ${branch} (public)`,
+  failedConfirmation: (problem: string, outcome: string) =>
+    `Publish this failed ${problem} attempt (${outcome}) and its submission report to your public repository?`,
   commit: (sha: string) => `Commit ${sha}`,
   commitMessage: (provider: string, problem: string, attemptId: string) =>
     `Record accepted ${provider}:${problem} attempt ${attemptId}`,
+  failedCommitMessage: (provider: string, problem: string, attemptId: string, outcome: string) =>
+    `Record failed ${provider}:${problem} attempt ${attemptId} (${outcome})`,
 } as const;
 export const DELIVERY_PATH = { root: 'progress', source: 'solution.v', metadata: 'acceptance.json' } as const;
+// A failed attempt keeps its own folder prefix and its own metadata file name, so no reader and no schema can
+// mistake it for an accepted record.
+export const FAILED_PATH = { prefix: 'failed-', metadata: 'attempt.json' } as const;
+// Where a destination puts new records. Legacy keeps the provider-first roots every existing repository already
+// uses; problem-first is opted into per destination and dedicates that repository to one provider.
+export const PUBLICATION_LAYOUT = { legacy: 'legacy', problemFirst: 'problem-first' } as const;
+export const RECORD_KIND = { passed: 'passed', failed: 'failed', imported: 'imported' } as const;
+// The identity is the full attempt or record id, so two records of the same kind can never share a folder.
+export const problemRecordRoot = (problem: string, kind: string, identity: string) =>
+  `${problem}/${kind}-${identity}`;
 export const deliveryRoot = (provider: string, problem: string, attemptId: string) =>
   `${DELIVERY_PATH.root}/${provider}/${problem}/${attemptId}`;
+export const failedRoot = (provider: string, problem: string, attemptId: string) =>
+  `${DELIVERY_PATH.root}/${provider}/${problem}/${FAILED_PATH.prefix}${attemptId}`;
 export const deliveryPaths = (root: string) => ({
   source: `${root}/${DELIVERY_PATH.source}`, metadata: `${root}/${DELIVERY_PATH.metadata}`,
 });
+export const failedPaths = (root: string) => ({
+  source: `${root}/${DELIVERY_PATH.source}`, metadata: `${root}/${FAILED_PATH.metadata}`,
+  report: `${root}/${REPORT_FILE}`,
+});
+// Diagram images live beside the report that names them, in the same per-attempt folder and the same commit.
+export const diagramPath = (root: string, name: string) => `${root}/${name}`;
 export const deliveryRef = (branch: string) => `heads/${branch}`;
 export const deliveryCommitUrl = (owner: string, name: string, sha: string) =>
   `${GITHUB_ORIGIN}/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/commit/${sha}`;

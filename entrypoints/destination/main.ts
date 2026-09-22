@@ -1,5 +1,7 @@
 import { DOM_EVENT, STORAGE_AREA } from '../../lib/constants/browser';
 import { DESTINATION_ISSUE, DESTINATION_MESSAGE, DESTINATION_TEXT } from '../../lib/constants/destination';
+import { PUBLICATION_LAYOUT } from '../../lib/constants/delivery';
+import { PROGRESS_PROVIDER } from '../../lib/constants/progress';
 import { AUTH_SESSION_KEY } from '../../lib/constants/github';
 import { browser } from 'wxt/browser';
 
@@ -21,6 +23,9 @@ const installation = required<HTMLSelectElement>('#installation');
 const name = required<HTMLInputElement>('#name');
 const branch = required<HTMLInputElement>('#branch');
 const saved = required<HTMLElement>('#saved');
+const layout = required<HTMLSelectElement>('#layout');
+const layoutState = required<HTMLElement>('#layout-state');
+const failedState = required<HTMLElement>('#failed-state');
 let version = 0;
 let busy = false;
 let connectionId: string | null = null;
@@ -31,6 +36,19 @@ function render(view: DestinationView) {
     required<HTMLInputElement>('#initialize').checked = false;
     required<HTMLInputElement>('#discard-confirmed').checked = false;
   }
+  required<HTMLInputElement>('#layout-confirmed').checked = false;
+  const chosenLayout = view.journal?.layout ?? PUBLICATION_LAYOUT.legacy;
+  layout.value = chosenLayout;
+  layoutState.textContent = !view.journal ? ''
+    : chosenLayout === PUBLICATION_LAYOUT.problemFirst
+      ? DESTINATION_TEXT.layoutProblemFirst(view.journal.layoutProvider ?? PROGRESS_PROVIDER)
+      : DESTINATION_TEXT.layoutLegacy;
+  // The public-visibility confirmation is never left ticked from a previous save.
+  required<HTMLInputElement>('#failed-confirmed').checked = false;
+  const publishFailed = view.journal?.publishFailed === true && view.journal.publishFailedSince !== undefined;
+  required<HTMLInputElement>('#failed-enabled').checked = publishFailed;
+  failedState.textContent = !view.journal ? ''
+    : publishFailed ? DESTINATION_TEXT.failedOn(view.journal.publishFailedSince ?? '') : DESTINATION_TEXT.failedOff;
   connectionId = view.connectionId;
   owner.textContent = DESTINATION_TEXT.owner(view.user.login);
   const chosen = installation.value;
@@ -103,6 +121,29 @@ required('#existing').addEventListener(DOM_EVENT.click, () => {
 required('#verify').addEventListener(DOM_EVENT.click, () => {
   void perform({ type: DESTINATION_MESSAGE.verify, expectedConnectionId: connectionId ?? '' });
 });
+required('#set-layout').addEventListener(DOM_EVENT.click, () => {
+  if (!required<HTMLInputElement>('#layout-confirmed').checked) {
+    status.textContent = DESTINATION_TEXT.confirmLayout;
+    return;
+  }
+  const chosen = layout.value === PUBLICATION_LAYOUT.problemFirst
+    ? PUBLICATION_LAYOUT.problemFirst : PUBLICATION_LAYOUT.legacy;
+  void perform({
+    type: DESTINATION_MESSAGE.layout, layout: chosen, provider: PROGRESS_PROVIDER, layoutConfirmed: true,
+    expectedConnectionId: connectionId ?? '',
+  });
+});
+required('#set-failed').addEventListener(DOM_EVENT.click, () => {
+  const enable = required<HTMLInputElement>('#failed-enabled').checked;
+  if (enable && !required<HTMLInputElement>('#failed-confirmed').checked) {
+    status.textContent = DESTINATION_TEXT.confirmFailedPublic;
+    return;
+  }
+  void perform({
+    type: DESTINATION_MESSAGE.failed, publishFailed: enable, publicConfirmed: enable,
+    failedConfirmed: true, expectedConnectionId: connectionId ?? '',
+  });
+});
 required('#discard').addEventListener(DOM_EVENT.click, () => {
   if (!required<HTMLInputElement>('#discard-confirmed').checked) {
     status.textContent = DESTINATION_TEXT.confirmDiscard;
@@ -117,6 +158,8 @@ browser.storage.onChanged.addListener((changes, area) => {
     owner.textContent = DESTINATION_TEXT.sessionChanged;
     status.textContent = destinationMessages[DESTINATION_ISSUE.sessionChanged];
     saved.textContent = '';
+    layoutState.textContent = '';
+    failedState.textContent = '';
     form.disabled = true;
   }
 });

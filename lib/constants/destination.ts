@@ -8,6 +8,8 @@ export const DESTINATION_MESSAGE = {
   create: 'destination:create',
   connect: 'destination:connect',
   verify: 'destination:verify',
+  layout: 'destination:layout',
+  failed: 'destination:failed',
   discard: 'destination:discard',
 } as const;
 export const DESTINATION_PHASE = {
@@ -65,6 +67,8 @@ export const DESTINATION_TEXT = {
   repositoryDescription: 'Progress Sync solutions and recorded progress',
   verificationIncomplete: 'Progress Sync: destination verification did not complete.',
   operationFailed: 'Progress Sync: destination operation failed.',
+  pauseUnrecorded: 'Progress Sync: access to the selected destination was withdrawn, but that could not be recorded. '
+    + 'Nothing was resumed or published; verify the destination again.',
   interfaceIncomplete: 'Destination interface is incomplete.',
   noSelection: 'No destination selected.',
   selectAction: 'Select a repository action. Saved destinations must be verified again before use.',
@@ -73,6 +77,15 @@ export const DESTINATION_TEXT = {
   interrupted: 'Destination setup was interrupted. Refresh and verify before retrying.',
   confirmPublic: 'Confirm public visibility before creating a repository.',
   confirmDiscard: 'Confirm discarding only the local setup record.',
+  confirmLayout: 'Confirm applying this layout to future saves before saving the choice.',
+  layoutLegacy: 'Layout for new saves: provider-first (progress/<provider>/<problem>/<attempt>/ and imports/...). Existing published records are unchanged.',
+  layoutProblemFirst: (provider: string) =>
+    `Layout for new saves: problem-first, dedicated to ${provider} (<problem>/passed-<attempt>/, <problem>/failed-<attempt>/, <problem>/imported-<record>/). Existing published records are unchanged.`,
+  confirmFailedPublic: 'Confirm that failed attempts and their reports will be published to your public repository before turning this on.',
+  failedOn: (at: string) =>
+    'Failed attempts captured from now on are published automatically to this public repository, with their source and submission report.'
+    + ` Turned on ${at}. Failed attempts captured before then stay local until you publish each one explicitly.`,
+  failedOff: 'Failed attempts stay local. Nothing failed is published unless you publish that attempt explicitly.',
   sessionChanged: 'GitHub session changed. Refresh to verify your identity.',
   owner: (login: string) => `Owner: ${login}`,
   installation: (appId: number, id: number, selection: string) =>

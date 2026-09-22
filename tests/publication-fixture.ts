@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { destinationFixture } from './destination-fixture';
 import { ACCESS_TOKEN } from './github-fixture';
 
-type WriteStage = 'tree' | 'commit' | 'ref';
+type WriteStage = 'blob' | 'tree' | 'commit' | 'ref';
 const shaSchema = z.string().regex(/^[0-9a-f]{40}$/);
 const pathSchema = z.string().refine(value => !/[\\\0]/.test(value)
   && value.split('/').every(part => part !== '' && part !== '.' && part !== '..'));
@@ -14,8 +14,21 @@ const inlineEntrySchema = z.strictObject({
 const treeRequestSchema = z.strictObject({
   base_tree: shaSchema, tree: z.array(z.unknown()),
 });
-const inlineEntriesSchema = z.tuple([inlineEntrySchema, inlineEntrySchema])
-  .refine(([first, second]) => first.path !== second.path);
+// Image bytes cannot ride inline in a tree request, so a diagram is referenced by the id of a blob created
+// first. Only the image file names the report can name are accepted this way.
+const imageEntrySchema = z.strictObject({
+  path: pathSchema.refine(value => /\/diagram-[1-9]\.png$/.test(value)),
+  mode: z.literal('100644'), type: z.literal('blob'), sha: shaSchema,
+});
+// Source and record, plus a report for the record kinds that publish one, plus up to four images. Never a
+// deletion, never a duplicate.
+const treeEntriesSchema = z.array(z.union([inlineEntrySchema, imageEntrySchema]))
+  .refine(entries => new Set(entries.map(entry => entry.path)).size === entries.length)
+  .refine(entries => {
+    const inline = entries.filter(entry => 'content' in entry).length;
+    return inline >= 2 && inline <= 3 && entries.length - inline <= 4;
+  });
+const blobRequestSchema = z.strictObject({ content: z.string().min(1), encoding: z.literal('base64') });
 const commitSchema = z.strictObject({
   tree: shaSchema,
   parents: z.array(shaSchema).max(1).readonly(),
@@ -25,12 +38,15 @@ const commitRequestSchema = commitSchema.extend({ parents: z.tuple([shaSchema]) 
 const refRequestSchema = z.strictObject({ sha: shaSchema, force: z.literal(false) });
 const seedFilesSchema = z.record(pathSchema, z.string());
 const fileChangesSchema = z.record(pathSchema, z.string().nullable());
+// A failed attempt lives beside the accepted ones under its own prefixed folder and its own record name.
+const attemptFolderSchema = z.union([z.uuid(), z.string().regex(/^failed-[0-9a-f-]{36}$/)]);
 const metadataPathSegmentsSchema = z.tuple([
   z.literal('progress'), z.literal('hdlbits'), z.string().regex(/^[a-z0-9][a-z0-9_]{0,127}$/),
-  z.uuid(), z.literal('acceptance.json'),
+  attemptFolderSchema, z.union([z.literal('acceptance.json'), z.literal('attempt.json')]),
 ]);
 const attemptPathSegmentsSchema = z.tuple([
-  z.literal('progress'), z.literal('hdlbits'), z.string().regex(/^[a-z0-9][a-z0-9_]{0,127}$/), z.uuid(),
+  z.literal('progress'), z.literal('hdlbits'), z.string().regex(/^[a-z0-9][a-z0-9_]{0,127}$/),
+  attemptFolderSchema,
 ]);
 const importRootSegments = [
   z.literal('imports'), z.literal('hdlbits'), z.string().regex(/^[a-z0-9][a-z0-9_]{0,127}$/),
@@ -38,12 +54,17 @@ const importRootSegments = [
 ] as const;
 const importRootSegmentsSchema = z.tuple(importRootSegments);
 const importMetadataSegmentsSchema = z.tuple([...importRootSegments, z.literal('import.json')]);
+// The problem-first layout addresses a record by problem, kind, and full identity.
+const problemFirstRoot = String.raw`[a-z0-9][a-z0-9_]{0,127}/(passed|failed|imported)-[0-9a-f-]{36}`;
+const problemFirstRootPattern = new RegExp(`^${problemFirstRoot}$`);
+const problemFirstMetadataPattern = new RegExp(`^${problemFirstRoot}/(acceptance|attempt|import)\\.json$`);
 const historyRequestSchema = z.strictObject({
   sha: shaSchema,
   path: pathSchema.refine(value => metadataPathSegmentsSchema.safeParse(value.split('/')).success
     || attemptPathSegmentsSchema.safeParse(value.split('/')).success
     || importMetadataSegmentsSchema.safeParse(value.split('/')).success
-    || importRootSegmentsSchema.safeParse(value.split('/')).success),
+    || importRootSegmentsSchema.safeParse(value.split('/')).success
+    || problemFirstRootPattern.test(value) || problemFirstMetadataPattern.test(value)),
   per_page: z.literal('100'),
   page: z.string().regex(/^[1-9][0-9]*$/).transform(Number).pipe(z.int().positive()),
 });
@@ -82,7 +103,14 @@ const placeholderMarker = JSON.stringify({
 const initialHead = 'a'.repeat(40);
 const initialTree = 'b'.repeat(40);
 const hash = (value: string) => createHash('sha1').update(value, 'utf8').digest('hex');
-const blobHash = (content: string) => hash(`blob ${Buffer.byteLength(content, 'utf8')}\0${content}`);
+// Image files hold bytes, not text. They are kept as their exact bytes in a latin1 string so one file map can
+// carry both, and every size and object id is taken from the bytes themselves.
+const contentBytes = (path: string, content: string) =>
+  Buffer.from(content, path.endsWith('.png') ? 'latin1' : 'utf8');
+const blobHash = (path: string, content: string) => {
+  const bytes = contentBytes(path, content);
+  return createHash('sha1').update(`blob ${bytes.length}\0`, 'utf8').update(bytes).digest('hex');
+};
 const hasFileDirectoryCollision = (files: ReadonlyMap<string, string>) =>
   [...files.keys()].some(path => {
     const parts = path.split('/');
@@ -98,6 +126,7 @@ export async function publicationFixture(
   const base = `/repos/fixture-user/${repositoryName}`;
   const api = `https://api.github.com${base}`;
   const trees = new Map<string, ReadonlyMap<string, string>>();
+  const blobs = new Map<string, Buffer>();
   const commits = new Map<string, Commit>([
     [initialHead, { tree: initialTree, parents: [], message: 'Initial learner files' }],
   ]);
@@ -192,8 +221,8 @@ export async function publicationFixture(
     const tree = [...files].map(([path, content]) => {
       const parts = path.split('/');
       for (let index = 1; index < parts.length; index++) directories.add(parts.slice(0, index).join('/'));
-      const size = Buffer.byteLength(content, 'utf8');
-      const blob = blobHash(content);
+      const size = contentBytes(path, content).length;
+      const blob = blobHash(path, content);
       return { path, mode: '100644', type: 'blob', sha: blob, size, url: `${api}/git/blobs/${blob}` };
     });
     const directoryEntries = [...directories].map(path => {
@@ -273,9 +302,10 @@ export async function publicationFixture(
     const treeMatch = /^\/git\/trees\/([0-9a-f]{40})$/.exec(path.slice(base.length));
     const blobMatch = /^\/git\/blobs\/([0-9a-f]{40})$/.exec(path.slice(base.length));
     const compareMatch = /^\/compare\/([0-9a-f]{40})\.\.\.([0-9a-f]{40})$/.exec(path.slice(base.length));
-    const stage: WriteStage | null = method === 'POST' && path === `${base}/git/trees` ? 'tree'
-      : method === 'POST' && path === `${base}/git/commits` ? 'commit'
-        : method === 'PATCH' && path === `${base}/git/refs/heads/${destination.defaultBranch}` ? 'ref' : null;
+    const stage: WriteStage | null = method === 'POST' && path === `${base}/git/blobs` ? 'blob'
+      : method === 'POST' && path === `${base}/git/trees` ? 'tree'
+        : method === 'POST' && path === `${base}/git/commits` ? 'commit'
+          : method === 'PATCH' && path === `${base}/git/refs/heads/${destination.defaultBranch}` ? 'ref' : null;
     check((method === 'GET' && (commitMatch || treeMatch || blobMatch || compareMatch || historyPath)) || stage,
       `${method} ${path}`);
     let historyQuery: z.infer<typeof historyRequestSchema> | null = null;
@@ -368,11 +398,11 @@ export async function publicationFixture(
     if (blobMatch) {
       const sha = blobMatch[1];
       for (const files of trees.values()) {
-        for (const content of files.values()) {
-          if (blobHash(content) === sha) {
+        for (const [path, content] of files) {
+          if (blobHash(path, content) === sha) {
+            const bytes = contentBytes(path, content);
             return route.fulfill({ json: {
-              sha, size: Buffer.byteLength(content, 'utf8'),
-              encoding: 'base64', content: Buffer.from(content, 'utf8').toString('base64'),
+              sha, size: bytes.length, encoding: 'base64', content: bytes.toString('base64'),
             } });
           }
         }
@@ -407,17 +437,40 @@ export async function publicationFixture(
 
     let response: unknown;
     switch (stage) {
+      case 'blob': {
+        const parsed = blobRequestSchema.safeParse(body);
+        if (!parsed.success) return invalid('Expected base64 blob content.');
+        const bytes = Buffer.from(parsed.data.content, 'base64');
+        if (bytes.length === 0 || bytes.toString('base64') !== parsed.data.content) {
+          return invalid('Blob content is not exact base64.');
+        }
+        if (server.failAt === stage) return fail();
+        if (server.loseBeforeAt === stage) return route.abort('failed');
+        const sha = createHash('sha1').update(`blob ${bytes.length}\0`, 'utf8').update(bytes).digest('hex');
+        blobs.set(sha, bytes);
+        response = { sha, url: `${api}/git/blobs/${sha}` };
+        break;
+      }
       case 'tree': {
         const parsed = treeRequestSchema.safeParse(body);
         if (!parsed.success) return invalid('Expected a base tree and inline entries.');
-        const entries = inlineEntriesSchema.safeParse(parsed.data.tree);
+        const entries = treeEntriesSchema.safeParse(parsed.data.tree);
         if (!entries.success) {
-          return invalid('Expected exactly two distinct UTF-8 file entries, without deletions.');
+          return invalid('Expected two or three distinct text entries and up to four images, without deletions.');
         }
         const baseFiles = trees.get(parsed.data.base_tree);
         if (!baseFiles) return invalid('Base tree does not exist.');
         const files = new Map(baseFiles);
-        for (const entry of entries.data) files.set(entry.path, entry.content);
+        for (const entry of entries.data) {
+          if ('content' in entry) {
+            files.set(entry.path, entry.content);
+            continue;
+          }
+          // An image can only enter a tree as a blob this fixture already stored, byte for byte.
+          const bytes = blobs.get(entry.sha);
+          if (!bytes) return invalid('Tree entry references an unknown blob.');
+          files.set(entry.path, bytes.toString('latin1'));
+        }
         if (hasFileDirectoryCollision(files)) return invalid('File conflicts with a directory.');
         if (server.failAt === stage) return fail();
         if (server.loseBeforeAt === stage) return route.abort('failed');

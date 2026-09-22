@@ -1,8 +1,8 @@
 import { browser, type Browser } from 'wxt/browser';
 import { EXTENSION_PAGE, STORAGE_ACCESS } from '../constants/browser';
 import {
-  IMPORT_CLAIM, IMPORT_DISCOVERY_KEY, IMPORT_FAILURE, IMPORT_LIMIT, IMPORT_MESSAGE, IMPORT_STATUS, IMPORT_STOP,
-  IMPORT_TABS_KEY, IMPORT_TEXT,
+  IMPORT_CLAIM, IMPORT_DISCOVERY_KEY, IMPORT_FAILURE, IMPORT_LIMIT, IMPORT_MESSAGE, IMPORT_SOURCE, IMPORT_STATUS,
+  IMPORT_STOP, IMPORT_TABS_KEY, IMPORT_TEXT,
 } from '../constants/import';
 import { HDL_ORIGIN, HDL_PROBLEM_PREFIX, PROGRESS_PROVIDER } from '../constants/progress';
 import { hashSource, problemIdSchema, sourceByteLength } from '../progress';
@@ -13,7 +13,7 @@ import {
   ImportFault, importCandidateSchema, importDiscoverySchema, importProgressSchema, importReadySchema, importRecordId,
   importRequestSchema, importScanReplySchema, importPagesSchema, parseImport, type ImportCandidate,
   type ImportDiscovery, type ImportedSnapshot, type ImportPage, type ImportProgress, type ImportPublishRequest,
-  type ImportReply,
+  type ImportReply, type ImportSource,
 } from './schemas';
 
 interface ScanSession {
@@ -21,6 +21,7 @@ interface ScanSession {
   tabId: number | null;
   documentId: string | null;
   offset: number;
+  source: ImportSource | null;
   cancelled: boolean;
   bytes: number;
 }
@@ -86,7 +87,9 @@ export function createImportService(
       active.tabId, { type: IMPORT_MESSAGE.stop, sessionId: active.id }, { documentId: active.documentId },
     ).catch(() => undefined);
   }
-  function finish(sessionId: string, error: string | null, inventory: number | null): Promise<void> {
+  function finish(
+    sessionId: string, error: string | null, inventory: number | null, source: ImportSource | null,
+  ): Promise<void> {
     return run(async () => {
       const active = session;
       if (!active || active.id !== sessionId) return;
@@ -98,15 +101,18 @@ export function createImportService(
       const counted = inventory ?? state.inventory;
       await put({
         ...state, updatedAt: new Date().toISOString(), error: failed ? error : null,
-        inventory: counted, offset: Math.min(state.offset, counted),
+        inventory: counted, offset: Math.min(state.offset, counted), source: source ?? state.source ?? null,
         status: failed ? IMPORT_STATUS.failed : cancelled ? IMPORT_STATUS.cancelled : IMPORT_STATUS.complete,
       });
     });
   }
   // Discovery only ever reads through a problem page the learner already has open; it never opens or navigates one.
-  async function scan(sessionId: string, candidates: ImportPage[], offset: number): Promise<void> {
+  async function scan(
+    sessionId: string, candidates: ImportPage[], offset: number, source: ImportSource | null,
+  ): Promise<void> {
     let error: string | null = IMPORT_TEXT.noPage;
     let inventory: number | null = null;
+    let read: ImportSource | null = null;
     for (const page of candidates) {
       const active = session;
       if (!active || active.id !== sessionId) return;
@@ -115,7 +121,7 @@ export function createImportService(
       let reply: unknown;
       try {
         reply = await browser.tabs.sendMessage(page.tabId, {
-          type: IMPORT_MESSAGE.scan, sessionId, offset, limit: IMPORT_LIMIT.problems,
+          type: IMPORT_MESSAGE.scan, sessionId, offset, limit: IMPORT_LIMIT.problems, source,
         }, { documentId: page.documentId });
       } catch {
         await forget(item => item.documentId === page.documentId)
@@ -124,10 +130,13 @@ export function createImportService(
       }
       const parsed = importScanReplySchema.safeParse(reply);
       error = !parsed.success ? IMPORT_TEXT.scanFailed : parsed.data.ok ? null : parsed.data.error;
-      if (parsed.success && parsed.data.ok) inventory = parsed.data.inventory;
+      if (parsed.success && parsed.data.ok) {
+        inventory = parsed.data.inventory;
+        read = parsed.data.source;
+      }
       break;
     }
-    await finish(sessionId, error, inventory);
+    await finish(sessionId, error, inventory, read);
   }
   async function discover(): Promise<ImportDiscovery> {
     const previous = await stored();
@@ -146,20 +155,26 @@ export function createImportService(
     // A full preview list restarts at the first problem it could not hold, so nothing is passed over unread.
     const full = carry !== null && (stopped || carry.candidates.length >= IMPORT_LIMIT.problems);
     const offset = carry ? Math.min(carry.offset + carry.scanned - (stopped ? 1 : 0), carry.inventory) : 0;
+    // A continuation has to read the same list its offset counts against. State saved before the statistics page
+    // could be read names no list, so a pass that already read something is continued as the navigation list it
+    // must have come from; a pass that read nothing leaves the choice open.
+    const source = carry
+      ? carry.source ?? (carry.offset + carry.scanned > 0 ? IMPORT_SOURCE.navigation : null)
+      : null;
     const now = new Date().toISOString();
     const state: ImportDiscovery = {
       schemaVersion: 1, status: IMPORT_STATUS.running, origin: HDL_ORIGIN, startedAt: now, updatedAt: now,
-      offset, inventory: carry?.inventory ?? 0, scanned: 0, total: 0, stopped: null,
+      offset, inventory: carry?.inventory ?? 0, source, scanned: 0, total: 0, stopped: null,
       candidates: full ? [] : carry?.candidates ?? [],
       // Skipped problems survive a restarted preview list; the one the byte budget stopped is read again instead.
       failures: (carry?.failures ?? []).filter(item => item.reason !== IMPORT_FAILURE.budgetExhausted), error: null,
     };
     await put(state);
     session = {
-      id: crypto.randomUUID(), tabId: null, documentId: null, offset, cancelled: false,
+      id: crypto.randomUUID(), tabId: null, documentId: null, offset, source, cancelled: false,
       bytes: state.candidates.reduce((total, candidate) => total + candidate.sourceBytes, 0),
     };
-    void scan(session.id, candidates, offset).catch(() => console.error(IMPORT_TEXT.operationFailed));
+    void scan(session.id, candidates, offset, source).catch(() => console.error(IMPORT_TEXT.operationFailed));
     return state;
   }
   async function cancel(): Promise<ImportDiscovery | null> {
@@ -178,12 +193,15 @@ export function createImportService(
     const active = session;
     if (!active || active.id !== input.sessionId || active.tabId !== page.tabId
       || active.documentId !== page.documentId) return { ok: false, proceed: false };
+    // A continuation that answered from a different list than it was asked for is not recorded against this offset.
+    if (active.source !== null && active.source !== input.source) return { ok: false, proceed: false };
     if (active.cancelled) return { ok: true, proceed: false };
     const state = await stored();
     if (state?.status !== IMPORT_STATUS.running) return { ok: false, proceed: false };
     const now = new Date().toISOString();
     const base = {
       ...state, updatedAt: now, scanned: input.scanned, total: input.total, inventory: input.inventory,
+      source: input.source,
     };
     // One entry per problem, kept for the whole continuation: no skipped problem is dropped to make room.
     function skip(reason: ImportDiscovery['failures'][number]['reason']) {

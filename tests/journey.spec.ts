@@ -30,7 +30,7 @@ const noCredentials = {
 const connectedCredentials = { ...noCredentials, accessInSession: true };
 const verifiedDestination = 'Verified destination: fixture-user/progress-solutions @ learning';
 const publishOlderName = 'Publish accepted attempt to fixture-user/progress-solutions @ learning (public)';
-const emptyRecovery = '0 recorded accepted; 0 imported unverified; 0 unverified saved entries.';
+const emptyRecovery = '0 recorded accepted; 0 recorded failed; 0 imported unverified; 0 unverified saved entries.';
 const placeholderMarker = JSON.stringify({
   kind: 'progress-sync', schemaVersion: 1, initializationId: '12345678-1234-4234-8234-123456789abc',
 });
@@ -39,10 +39,11 @@ function sourceHash(bytes: string): string {
   return createHash('sha256').update(bytes, 'utf8').digest('hex');
 }
 
-function acceptanceRecord(problemId: string, attemptId: string, bytes: string) {
+function acceptanceRecord(problemId: string, attemptId: string, bytes: string, report: string) {
   return {
     schemaVersion: 1, provider: 'hdlbits', problemId, attemptId, sourceHash: sourceHash(bytes),
     submittedAt: expect.any(String), observedAt: expect.any(String),
+    reportHash: sourceHash(report), reportBytes: Buffer.byteLength(report),
     provenance: { capture: 'browser-post', verdict: 'success' },
   };
 }
@@ -60,10 +61,13 @@ function expectPublishedFiles(
   for (const record of records) {
     const root = `progress/hdlbits/${record.problemId}/${record.id}`;
     expect(published.files.get(`${root}/solution.v`)).toBe(record.bytes);
+    const report = published.files.get(`${root}/report.json`);
+    expect(report).toBeDefined();
     expect(JSON.parse(published.files.get(`${root}/acceptance.json`) ?? 'null'))
-      .toEqual(acceptanceRecord(record.problemId, record.id, record.bytes));
+      .toEqual(acceptanceRecord(record.problemId, record.id, record.bytes, report!));
   }
-  expect([...published.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(records.length * 2);
+  // Each accepted record is its source, its acceptance metadata, and the report observed with it.
+  expect([...published.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(records.length * 3);
   expect(published.files.get('README.md')).toBe('Keep this learner file.\n');
   expect(published.files.get('.progress-sync.json')).toBe(marker);
 }
@@ -172,7 +176,7 @@ test('the guest journey reaches accepted publication and is restored in a fresh 
     await freshDestination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
     await expect(freshDestination.getByRole('status')).toHaveText(verifiedDestination);
 
-    await expect(restored.locator('#recovery-status')).toHaveText('2 recorded accepted; 0 imported unverified; 0 unverified saved entries.');
+    await expect(restored.locator('#recovery-status')).toHaveText('2 recorded accepted; 0 recorded failed; 0 imported unverified; 0 unverified saved entries.');
     for (const record of records) {
       const entry = restored.locator('#recovered-entries article').filter({ hasText: record.id });
       await expect(entry.getByRole('heading', { name: `hdlbits:${record.problemId}`, exact: true })).toBeVisible();

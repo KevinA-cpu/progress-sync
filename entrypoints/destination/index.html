@@ -31,9 +31,42 @@
         <p>Connecting a populated repository requires a compatible marker. Initialization adds only that marker, never replaces existing files.</p>
         <button id="existing" type="button">Connect existing repository</button>
         <button id="verify" type="button">Verify pending or saved repository</button>
+        <h2>Folder layout for new saves</h2>
+        <p>New records go to <code>progress/&lt;provider&gt;/&lt;problem&gt;/&lt;attempt&gt;/</code> and
+          <code>imports/&lt;provider&gt;/&lt;problem&gt;/&lt;slot&gt;/&lt;hash&gt;/</code> unless you choose the
+          problem-first layout for this repository. Problem-first writes
+          <code>&lt;problem&gt;/passed-&lt;attempt&gt;/</code>, <code>&lt;problem&gt;/failed-&lt;attempt&gt;/</code>
+          and <code>&lt;problem&gt;/imported-&lt;record&gt;/</code>, and dedicates this repository to HDLBits;
+          a different provider is refused rather than added to it.</p>
+        <p>The choice applies only to records saved after it. Nothing already published is moved, renamed, or
+          deleted, the repository marker file is not rewritten, and work already queued keeps the layout it was
+          created with. Both layouts are read back on this device's “Saved progress from GitHub”.</p>
+        <p><label>Layout for new saves
+          <select id="layout">
+            <option value="legacy">Provider-first (default)</option>
+            <option value="problem-first">Problem-first, HDLBits only</option>
+          </select></label></p>
+        <p><label><input id="layout-confirmed" type="checkbox"> Apply this layout to records saved from now on</label></p>
+        <button id="set-layout" type="button">Save layout choice</button>
+        <h2>Failed attempts</h2>
+        <p>Failed attempts stay on this device by default. Turning this on publishes each new failed attempt to
+          your selected <strong>public</strong> repository: the exact source you submitted, the recorded outcome,
+          and a submission report holding the result's status line, any supported compiler or simulator
+          messages, and each timing diagram the result drew, stored as a static PNG beside the report. Anyone can
+          read them.</p>
+        <p>Lesson explanations, reference solutions, and expected-output tables are never copied or published.
+          Diagrams are published with HDLBits named as their source and a link to the problem page; HDLBits does
+          not endorse this extension. Turning this on publishes nothing captured before now, and turning it off
+          stops new failed attempts without removing anything already published. Each older failed attempt is
+          published only when you choose it on the attempts page.</p>
+        <p><label><input id="failed-enabled" type="checkbox"> Publish new failed attempts and their reports automatically</label></p>
+        <p><label><input id="failed-confirmed" type="checkbox"> I understand failed attempts and reports will be publicly readable</label></p>
+        <button id="set-failed" type="button">Save failed-attempt choice</button>
         <p><label><input id="discard-confirmed" type="checkbox"> Forget only the local setup record; leave any GitHub repository unchanged</label></p>
         <button id="discard" type="button">Discard local setup record</button>
       </fieldset>
+      <p id="layout-state"></p>
+      <p id="failed-state"></p>
       <p id="saved"></p>
       <p>Verification checks current identity, installation access, permissions and branch. Branch rules or later revocation may still reject a write.</p>
     </main>

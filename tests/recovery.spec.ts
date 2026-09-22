@@ -274,7 +274,7 @@ test('truncated recursive results are recovered completely through subtrees on a
   await destination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
   await expect(destination.getByRole('status')).toHaveText('Verified destination: fixture-user/progress-solutions @ practice/verilog');
   await expect(progress.getByText('Recorded acceptance from GitHub', { exact: true })).toHaveCount(3);
-  await expect(progress.locator('#recovery-status')).toHaveText('3 recorded accepted; 0 imported unverified; 0 unverified saved entries.');
+  await expect(progress.locator('#recovery-status')).toHaveText('3 recorded accepted; 0 recorded failed; 0 imported unverified; 0 unverified saved entries.');
   expect(remote.reads.filter(read => read.path.includes('/git/trees/') && !read.recursive).length).toBeGreaterThan(3);
   expect(remote.writes).toBe(0);
 });
@@ -300,7 +300,7 @@ for (const scenario of invalidRecords) {
     if (scenario.missingSource) files.delete(`${root}/solution.v`);
     const { remote, destination } = await prepareRecovery(extensionContext, progress, files);
     await destination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
-    await expect(progress.locator('#recovery-status')).toHaveText('0 recorded accepted; 0 imported unverified; 1 unverified saved entries.');
+    await expect(progress.locator('#recovery-status')).toHaveText('0 recorded accepted; 0 recorded failed; 0 imported unverified; 1 unverified saved entries.');
     await expect(progress.getByText(`Unverified saved file: ${scenario.message}`, { exact: true })).toBeVisible();
     await expect(progress.getByText('Recorded acceptance from GitHub', { exact: true })).toHaveCount(0);
     expect(remote.writes).toBe(0);
@@ -359,7 +359,7 @@ test('one corrupt record does not hide valid saved work or file-only warnings', 
   ]);
   const { destination } = await prepareRecovery(extensionContext, progress, files);
   await destination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
-  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 imported unverified; 2 unverified saved entries.');
+  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 recorded failed; 0 imported unverified; 2 unverified saved entries.');
 });
 
 for (const content of ['invalid-base64!', '/w==']) {
@@ -391,7 +391,7 @@ test('a failed refresh keeps only the previously completed snapshot and labels i
 }) => {
   const { destination, remote } = await prepareRecovery(extensionContext, progress, savedFiles());
   await destination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
-  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 imported unverified; 0 unverified saved entries.');
+  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 recorded failed; 0 imported unverified; 0 unverified saved entries.');
   remote.failStatus = 503;
   await progress.getByRole('button', { name: 'Refresh saved progress' }).click();
   await expect(progress.locator('#recovery-status')).toContainText('Saved progress could not be recovered.');
@@ -405,7 +405,7 @@ test('interrupted recovery survives a worker restart without publishing or silen
 }) => {
   const { destination, remote } = await prepareRecovery(extensionContext, progress, savedFiles());
   await destination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
-  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 imported unverified; 0 unverified saved entries.');
+  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 recorded failed; 0 imported unverified; 0 unverified saved entries.');
   const gate = Promise.withResolvers<void>();
   remote.readGate = gate.promise;
   const reads = remote.reads.length;
@@ -418,7 +418,7 @@ test('interrupted recovery survives a worker restart without publishing or silen
   remote.readGate = null;
   gate.resolve();
   await progress.getByRole('button', { name: 'Refresh saved progress' }).click();
-  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 imported unverified; 0 unverified saved entries.');
+  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 recorded failed; 0 imported unverified; 0 unverified saved entries.');
   expect(remote.writes).toBe(0);
 });
 
@@ -448,7 +448,7 @@ test('recovery commands reject arbitrary targets and wrong extension pages', asy
 }) => {
   const { destination, connection, remote } = await prepareRecovery(extensionContext, progress, savedFiles());
   await destination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
-  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 imported unverified; 0 unverified saved entries.');
+  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 recorded failed; 0 imported unverified; 0 unverified saved entries.');
   const reads = remote.reads.length;
   const replies = await progress.evaluate(async () => {
     const view = await chrome.runtime.sendMessage({ type: 'recovery:list' });
@@ -506,7 +506,7 @@ test('a stale refresh request cannot cancel a valid in-flight recovery or leave 
   expect(reply.ok).toBe(false);
   remote.readGate = null;
   gate.resolve();
-  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 imported unverified; 0 unverified saved entries.');
+  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 recorded failed; 0 imported unverified; 0 unverified saved entries.');
   await expect(progress.getByRole('button', { name: 'Refresh saved progress' })).toBeEnabled();
 });
 
@@ -611,7 +611,7 @@ test('a late manual-refresh error cannot overwrite a newer successful recovery i
 }) => {
   const { destination, target, remote } = await prepareRecovery(extensionContext, progress, savedFiles());
   await destination.getByRole('button', { name: 'Connect existing repository', exact: true }).click();
-  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 imported unverified; 0 unverified saved entries.');
+  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 recorded failed; 0 imported unverified; 0 unverified saved entries.');
   await progress.evaluate(() => {
     const original = chrome.runtime.sendMessage.bind(chrome.runtime);
     chrome.runtime.sendMessage = new Proxy(original, {
@@ -634,5 +634,5 @@ test('a late manual-refresh error cannot overwrite a newer successful recovery i
   await expect(progress.getByRole('heading', { name: 'hdlbits:wire', exact: true })).toBeVisible();
   gate.resolve();
   await expect.poll(() => progress.evaluate(() => Reflect.get(globalThis, 'manualRefreshFinished'))).toBe(true);
-  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 imported unverified; 0 unverified saved entries.');
+  await expect(progress.locator('#recovery-status')).toHaveText('1 recorded accepted; 0 recorded failed; 0 imported unverified; 0 unverified saved entries.');
 });

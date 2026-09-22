@@ -26,10 +26,13 @@ async function expectPublication(server: Awaited<ReturnType<typeof setup>>['serv
   const job = view.jobs[0];
   const root = `progress/hdlbits/step_one/${job.id}`;
   expect(server.files.get(`${root}/solution.v`)).toBe(submittedBytes);
+  const report = server.files.get(`${root}/report.json`);
+  expect(report).toBeDefined();
   expect(JSON.parse(server.files.get(`${root}/acceptance.json`)!)).toEqual({
     schemaVersion: 1, provider: 'hdlbits', problemId: 'step_one', attemptId: job.id,
     sourceHash: createHash('sha256').update(submittedBytes).digest('hex'),
     submittedAt: job.snapshot.submittedAt, observedAt: job.snapshot.observedAt,
+    reportHash: createHash('sha256').update(report!).digest('hex'), reportBytes: Buffer.byteLength(report!),
     provenance: { capture: 'browser-post', verdict: 'success' },
   });
   expect(job.receipt.commitSha).toBe(server.head);
@@ -83,7 +86,7 @@ for (const problemId of ['step_one', 'zero']) {
     gate.resolve();
     await expectPublication(server, progress);
     for (const [path, content] of Object.entries(newerFiles)) expect(server.files.get(path)).toBe(content);
-    expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(4);
+    expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(5);
     expect((await delivery(progress)).jobs[0].candidate.baseCommitSha).toBe(advanced);
     expect(server.writes).toHaveLength(6);
     expect(server.updates).toBe(1);
@@ -134,7 +137,8 @@ for (const originalWriter of ['this job', 'another writer']) {
       });
     }
     const head = server.commitFiles({
-      [`${root}/solution.v`]: null, [`${root}/acceptance.json`]: null, 'keep.txt': 'Keep this deletion.\n',
+      [`${root}/solution.v`]: null, [`${root}/acceptance.json`]: null, [`${root}/report.json`]: null,
+      'keep.txt': 'Keep this deletion.\n',
     });
     const files = new Map(server.files);
     server.loseResponseAt = null;

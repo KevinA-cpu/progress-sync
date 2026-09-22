@@ -58,10 +58,14 @@ for (const otherProblem of ['step_one', 'zero']) {
       const root = `progress/hdlbits/${problemId}/${attemptId}`;
       const bytes = source.replaceAll('\n', '\r\n');
       expect(server.files.get(`${root}/solution.v`)).toBe(bytes);
+      // Each tab publishes the report of its own result document alongside its own source.
+      const report = server.files.get(`${root}/report.json`);
+      expect(JSON.parse(report ?? 'null')).toMatchObject({ kind: 'report', problemId, attemptId });
       expect(JSON.parse(server.files.get(`${root}/acceptance.json`)!)).toEqual({
         schemaVersion: 1, provider: 'hdlbits', problemId, attemptId,
         sourceHash: createHash('sha256').update(bytes).digest('hex'),
         submittedAt: expect.any(String), observedAt: expect.any(String),
+        reportHash: createHash('sha256').update(report!).digest('hex'), reportBytes: Buffer.byteLength(report!),
         provenance: { capture: 'browser-post', verdict: 'success' },
       });
       await expect(article.getByRole('textbox', { name: 'Submitted source' })).toHaveValue(source);
@@ -69,7 +73,7 @@ for (const otherProblem of ['step_one', 'zero']) {
     }
     expect(new Set(ids).size).toBe(2);
     expect(new Set(receipts).size).toBe(2);
-    expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(4);
+    expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(6);
     expect(server.files.get('README.md')).toBe('Keep this learner file.\n');
     expect(server.updates).toBe(2);
     expect(server.writes).toHaveLength(6);
@@ -87,7 +91,7 @@ for (const otherProblem of ['step_one', 'zero']) {
       contentType: 'text/html', body: successPage.replace('Status: Success!', 'Status: Incorrect'),
     }));
     await submit(problem, `// Failed reattempt\n${submittedSource.replace("1'b1", "1'b0")}`);
-    await expect(progress.getByText('HDLBits did not accept this submission.', { exact: false })).toHaveCount(1);
+    await expect(progress.getByText('Incorrect - not saved to GitHub', { exact: true })).toHaveCount(1);
     await expect(progress.getByText('Saved to GitHub', { exact: true })).toHaveCount(2);
     expect(server.writes).toHaveLength(6);
   });
@@ -153,13 +157,13 @@ for (const priorVerdict of ['Success!', 'Incorrect']) {
     });
     await submit(problem, submittedSource);
     const priorAccepted = priorVerdict === 'Success!';
-    await expect(progress.getByText(priorAccepted ? 'Saved to GitHub' : 'Unverified: HDLBits did not accept this submission.',
+    await expect(progress.getByText(priorAccepted ? 'Saved to GitHub' : 'Incorrect - not saved to GitHub',
       { exact: true })).toBeVisible();
     const writes = server.writes.length;
     await submit(problem, `// New attempt\n${submittedSource}`);
     await expect(progress.getByText('Waiting for the result - not saved to GitHub', { exact: true })).toHaveCount(1);
     const replies = await observer.evaluate(`(async () => {
-      const result = { type: 'hdlbits:result', problemId: 'step_one', verdict: 'success' };
+      const result = { type: 'hdlbits:result', problemId: 'step_one', verdict: 'success', report: null };
       return {
         repeated: await Promise.all([1, 2].map(() => chrome.runtime.sendMessage(result))),
         malformed: await Promise.all([

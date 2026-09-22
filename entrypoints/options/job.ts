@@ -9,8 +9,8 @@ import { AUTH_SESSION_KEY } from '../../lib/constants/github';
 import { LIFECYCLE_TEXT } from '../../lib/constants/lifecycle';
 import { retryExhausted } from '../../lib/delivery/retry';
 import {
-  deliveryReplySchema, type DeliveryJob, type DeliveryReply, type DiscardRequest, type PublishRequest,
-  type RetryRequest,
+  deliveryReplySchema, isFailedSnapshot, type DeliveryJob, type DeliveryReply, type DiscardRequest,
+  type PublishFailedRequest, type PublishRequest, type RetryRequest,
 } from '../../lib/delivery/schemas';
 import { sameDestination, type DestinationTarget } from '../../lib/destination/schemas';
 import { renderMetadata } from './fields';
@@ -49,7 +49,8 @@ browser.storage.onChanged.addListener((changes, area) => {
 });
 
 export async function deliveryAction(
-  button: HTMLButtonElement, state: HTMLElement, request: PublishRequest | RetryRequest | DiscardRequest,
+  button: HTMLButtonElement, state: HTMLElement,
+  request: PublishRequest | PublishFailedRequest | RetryRequest | DiscardRequest,
   context: JobContext,
 ): Promise<void> {
   if (!context.current() || !button.isConnected || button.disabled) return;
@@ -70,12 +71,14 @@ export async function deliveryAction(
 }
 
 export function jobStateText(job: DeliveryJob): string | null {
+  // A delivered failed attempt says so: it is never shown with the accepted wording.
+  const failed = isFailedSnapshot(job.snapshot);
   switch (job.state) {
     case DELIVERY_STATE.pending:
     case DELIVERY_STATE.publishing:
-      return DELIVERY_TEXT.awaiting;
+      return failed ? DELIVERY_TEXT.awaitingFailed : DELIVERY_TEXT.awaiting;
     case DELIVERY_STATE.saved:
-      return DELIVERY_TEXT.saved;
+      return failed ? DELIVERY_TEXT.savedFailed : DELIVERY_TEXT.saved;
     case DELIVERY_STATE.reconciling:
       return DELIVERY_TEXT.reconciling;
     case DELIVERY_STATE.blocked:

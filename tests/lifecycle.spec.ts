@@ -215,7 +215,7 @@ test('a discarded attempt cannot let its resolved result document poison a newer
     await expect(progress.getByText('Waiting for the result - not saved to GitHub', { exact: true })).toHaveCount(1);
     // The still-displayed first result document reports again while the newer result is outstanding.
     expect(await observer.evaluate(`(async () => Promise.all([1, 2].map(() => chrome.runtime.sendMessage(
-      { type: 'hdlbits:result', problemId: 'step_one', verdict: 'success' }
+      { type: 'hdlbits:result', problemId: 'step_one', verdict: 'success', report: null }
     ))))()`)).toEqual(Array(2).fill({
       ok: false, error: 'No matching observed submission. This result is unverified.',
     }));

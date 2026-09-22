@@ -32,7 +32,9 @@ test('an accepted guest submission publishes exact source and metadata in one co
   const root = `progress/hdlbits/step_one/${attemptId}`;
   expect(server.files.get(`${root}/solution.v`)).toBe(submittedBytes);
   const metadata = server.files.get(`${root}/acceptance.json`);
+  const report = server.files.get(`${root}/report.json`);
   expect(metadata).toBeDefined();
+  expect(report).toBeDefined();
   expect(JSON.parse(metadata!)).toEqual({
     schemaVersion: 1,
     provider: 'hdlbits',
@@ -41,11 +43,27 @@ test('an accepted guest submission publishes exact source and metadata in one co
     sourceHash: 'e792e08eb073133e384987694229526ad3da6b1d3bcff73bada595e5f934dc0d',
     submittedAt: expect.any(String),
     observedAt: expect.any(String),
+    reportHash: createHash('sha256').update(report!).digest('hex'),
+    reportBytes: Buffer.byteLength(report!),
     provenance: { capture: 'browser-post', verdict: 'success' },
+  });
+  // An accepted result that drew nothing still publishes what it stated, and states that it drew nothing.
+  expect(JSON.parse(report!)).toEqual({
+    schemaVersion: 1,
+    kind: 'report',
+    provider: 'hdlbits',
+    problemId: 'step_one',
+    attemptId,
+    outcome: 'success',
+    observedAt: JSON.parse(metadata!).observedAt,
+    status: 'Status: Success!',
+    messages: [],
+    coverage: { statusLine: true, diagnosticMessages: false, timingDiagram: false, artifacts: 'none' },
+    provenance: { capture: 'browser-post', origin: 'https://hdlbits.01xz.net' },
   });
 
   expect([...server.files.keys()].filter(path => path.startsWith('progress/')).sort()).toEqual([
-    `${root}/acceptance.json`, `${root}/solution.v`,
+    `${root}/acceptance.json`, `${root}/report.json`, `${root}/solution.v`,
   ]);
   await expect(progress.getByRole('link', { name: `Commit ${server.head}` }))
     .toHaveAttribute('href', `https://github.com/fixture-user/progress-solutions/commit/${server.head}`);
@@ -171,6 +189,10 @@ test('delivery messages reject arbitrary targets, forged snapshots, and stale se
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(progress.getByText('Accepted locally - not saved to GitHub', { exact: true })).toBeVisible();
   const { server, connection } = await setup(extensionContext, progress);
+  // Delivery publishes a snapshot only once its artifact phase has concluded, so these requests are the
+  // refusals they are meant to be rather than a report that is still being observed.
+  await expect(progress.getByText('The timing diagrams and messages for this result are still being observed.'))
+    .toHaveCount(0);
   const attemptId = await progress.locator('article dd').first().innerText();
   const replies = await progress.evaluate(async attemptId => {
     const view = await chrome.runtime.sendMessage({ type: 'delivery:list' });
@@ -283,7 +305,7 @@ for (const stage of ['tree', 'commit', 'ref'] as const) {
         ? 'Delivery blocked: GitHub rejected publication.' : 'Publication outcome is uncertain.', { exact: false })).toBeVisible();
       expect(server.updates).toBe(outcome === 'lost' && stage === 'ref' ? 1 : 0);
       expect([...server.files.keys()].filter(path => path.startsWith('progress/')))
-        .toHaveLength(outcome === 'lost' && stage === 'ref' ? 2 : 0);
+        .toHaveLength(outcome === 'lost' && stage === 'ref' ? 3 : 0);
       expect(server.files.get('README.md')).toBe('Keep this learner file.\n');
       await expect(progress.getByRole('link', { name: /^Commit / })).toHaveCount(0);
       await expect(progress.getByText('SYNTHETIC_PRIVATE_DIAGNOSTIC', { exact: false })).toHaveCount(0);
@@ -389,7 +411,7 @@ test('a concurrent branch advance is preserved by the non-force update', async (
   expect(server.files.get('README.md')).toBe('Keep this learner file.\n');
   expect(server.updates).toBe(1);
   expect(server.writes).toHaveLength(6);
-  expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(2);
+  expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(3);
   await expect(progress.getByRole('link', { name: `Commit ${server.head}` })).toBeVisible();
 });
 
@@ -406,7 +428,7 @@ test('a later accepted attempt preserves the previously published progress', asy
   await expect(progress.getByText('Saved to GitHub', { exact: true })).toHaveCount(2);
   for (const [path, content] of previousFiles) expect(server.files.get(path)).toBe(content);
   expect(server.updates).toBe(2);
-  expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(4);
+  expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(6);
 });
 
 test('a second accepted attempt becomes durable while an earlier upload is still outstanding', async ({
@@ -531,7 +553,7 @@ test('publication rechecks permissions and repository identity after onboarding'
   await page.getByRole('button', { name: 'Verify pending or saved repository' }).click();
   await expect(page.getByRole('status')).toContainText('Verified destination:');
   await expect(progress.getByRole('region', { name: 'Saved progress from GitHub' })
-    .getByText('0 recorded accepted; 0 imported unverified; 0 unverified saved entries.', { exact: true })).toBeVisible();
+    .getByText('0 recorded accepted; 0 recorded failed; 0 imported unverified; 0 unverified saved entries.', { exact: true })).toBeVisible();
   target.repositoryId = 202;
   await problem.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(progress.getByText('Delivery blocked: The repository identity, owner, or visibility changed.', { exact: false })).toBeVisible();

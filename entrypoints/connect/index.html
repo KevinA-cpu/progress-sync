@@ -26,8 +26,18 @@
         <p><a id="verification-link" target="_blank" rel="noopener noreferrer">Open GitHub</a></p>
         <p id="verification-expiry"></p>
       </section>
-      <p>Only the expiring access token is retained in trusted browser-session storage.
-        Refresh tokens are discarded. Reconnect after browser restart or token expiry.</p>
+      <p>Only the expiring access token is retained; refresh tokens are always discarded, and nothing is ever written
+        to synchronized storage. By default it is held in trusted browser-session storage only, so you reconnect after
+        a browser restart. Remembering this connection below is the only case where it is also written to this browser
+        profile's extension storage on disk, and only until the original expiry.</p>
+      <section aria-label="Remember this connection">
+        <h2>Remember this connection</h2>
+        <p>
+          <label for="remember"><input id="remember" type="checkbox"> <span id="remember-label"></span></label>
+        </p>
+        <p id="remember-consent"></p>
+        <p id="remember-state"></p>
+      </section>
       <h2>Disconnecting and retained work</h2>
       <p>Disconnect clears local credentials. Disconnecting or restarting the browser retains captured source,
         pending delivery jobs, and saved history. Each delivery job stays bound to its original GitHub account,

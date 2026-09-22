@@ -1,7 +1,7 @@
 import { z } from '../schema';
 import {
   IMPORT_CLAIM, IMPORT_FAILURE, IMPORT_LIMIT, IMPORT_MESSAGE, IMPORT_PROVENANCE, IMPORT_SNAPSHOT_KIND,
-  IMPORT_STATUS, IMPORT_STOP, IMPORT_TEXT,
+  IMPORT_SOURCE, IMPORT_STATUS, IMPORT_STOP, IMPORT_TEXT,
 } from '../constants/import';
 import { HDL_ORIGIN, PROGRESS_PROVIDER, SOURCE_HASH_ALGORITHM } from '../constants/progress';
 import { problemIdSchema, sourceByteLength, sourceHashSchema, submittedSourceSchema } from '../progress';
@@ -63,6 +63,8 @@ export const importFailureSchema = z.strictObject({
   problemId: problemIdSchema, reason: z.enum(IMPORT_FAILURE),
 });
 export const importInventorySchema = z.int().nonnegative().max(IMPORT_LIMIT.inventory);
+export const importSourceSchema = z.enum(IMPORT_SOURCE);
+export type ImportSource = z.infer<typeof importSourceSchema>;
 export const importDiscoverySchema = z.strictObject({
   schemaVersion: z.literal(1),
   status: z.enum(IMPORT_STATUS),
@@ -72,6 +74,8 @@ export const importDiscoverySchema = z.strictObject({
   // A pass reads a bounded window of the solved problems the page lists; the rest stay reachable from offset.
   offset: importInventorySchema,
   inventory: importInventorySchema,
+  // Which list the offset counts against. Absent in state saved before the statistics page could be read.
+  source: importSourceSchema.nullish(),
   scanned: z.int().nonnegative().max(IMPORT_LIMIT.problems),
   total: z.int().nonnegative().max(IMPORT_LIMIT.problems),
   stopped: z.enum(IMPORT_STOP).nullable(),
@@ -112,6 +116,8 @@ export type ImportPage = z.infer<typeof importPagesSchema>[number];
 export const importScanRequestSchema = z.strictObject({
   type: z.literal(IMPORT_MESSAGE.scan), sessionId: z.uuid(),
   offset: importInventorySchema, limit: z.int().positive().max(IMPORT_LIMIT.problems),
+  // A continuation names the list its offset was counted against; a new pass leaves the choice open.
+  source: importSourceSchema.nullable(),
 });
 export type ImportScanRequest = z.infer<typeof importScanRequestSchema>;
 export const importStopRequestSchema = z.strictObject({
@@ -120,7 +126,7 @@ export const importStopRequestSchema = z.strictObject({
 export const importScanReplySchema = z.discriminatedUnion('ok', [
   z.strictObject({
     ok: z.literal(true), scanned: z.int().nonnegative().max(IMPORT_LIMIT.problems),
-    inventory: importInventorySchema, stopped: z.boolean(),
+    inventory: importInventorySchema, stopped: z.boolean(), source: importSourceSchema,
   }),
   z.strictObject({ ok: z.literal(false), error: z.string() }),
 ]);
@@ -129,6 +135,7 @@ export const importProgressSchema = z.strictObject({
   sessionId: z.uuid(),
   problemId: problemIdSchema,
   inventory: z.int().positive().max(IMPORT_LIMIT.inventory),
+  source: importSourceSchema,
   total: z.int().positive().max(IMPORT_LIMIT.problems),
   scanned: z.int().positive().max(IMPORT_LIMIT.problems),
   result: z.discriminatedUnion('found', [

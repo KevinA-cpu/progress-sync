@@ -1,5 +1,7 @@
 import { DOM_EVENT, STORAGE_AREA, UI_ROLE } from '../../lib/constants/browser';
-import { CAPTURE_STATE, PROGRESS_KEY, PROGRESS_MESSAGE, PROGRESS_TEXT } from '../../lib/constants/progress';
+import {
+  CAPTURE_STATE, GRADING_VERDICT, PROGRESS_KEY, PROGRESS_MESSAGE, PROGRESS_TEXT, VERDICT_LABEL,
+} from '../../lib/constants/progress';
 import { browser } from 'wxt/browser';
 import { progressReplySchema, type Attempt } from '../../lib/progress';
 import {
@@ -8,13 +10,15 @@ import {
 import { AUTH_SESSION_KEY } from '../../lib/constants/github';
 import { DESTINATION_STORAGE_PREFIX } from '../../lib/constants/destination';
 import { LIFECYCLE_TEXT } from '../../lib/constants/lifecycle';
-import { acceptedJobSnapshot, type DeliveryJob } from '../../lib/delivery/schemas';
+import { capturedJobSnapshot, type DeliveryJob } from '../../lib/delivery/schemas';
 import { initializeRecovery } from './recovery';
 import { initializeImports } from './import';
 import {
   deliveryAction, deliveryView, invalidateDeliveryView, jobStateText, renderJob, type JobContext,
 } from './job';
-import { renderMetadata, renderSource } from './fields';
+import { renderMetadata, renderReport, renderSource } from './fields';
+import { readDiagramImages } from '../../lib/diagram-store';
+import { isPendingReport, type DiagramImage } from '../../lib/report';
 import './style.css';
 
 const status = document.querySelector<HTMLParagraphElement>('#status');
@@ -23,7 +27,9 @@ const refresh = document.querySelector<HTMLButtonElement>('#refresh');
 if (!status || !attempts || !refresh) throw new Error(PROGRESS_TEXT.interfaceIncomplete);
 let loadGeneration = 0;
 
-function renderAttempt(attempt: Attempt, context: JobContext, job?: DeliveryJob): HTMLElement {
+function renderAttempt(
+  attempt: Attempt, context: JobContext, images: DiagramImage[] | null, job?: DeliveryJob,
+): HTMLElement {
   const article = document.createElement('article');
   const heading = document.createElement('h2');
   heading.textContent = PROGRESS_TEXT.problemHeading(attempt.problemId);
@@ -34,6 +40,8 @@ function renderAttempt(attempt: Attempt, context: JobContext, job?: DeliveryJob)
   const selection = context.selection;
   const values = {
     [PROGRESS_TEXT.attemptLabel]: attempt.id,
+    [PROGRESS_TEXT.outcomeLabel]: attempt.outcome === undefined
+      ? VERDICT_LABEL[GRADING_VERDICT.unknown] : VERDICT_LABEL[attempt.outcome],
     [PROGRESS_TEXT.submittedLabel]: attempt.submittedAt,
     [PROGRESS_TEXT.observedLabel]: attempt.observedAt ?? PROGRESS_TEXT.notYet,
     [PROGRESS_TEXT.hashLabel]: attempt.sourceHash ?? PROGRESS_TEXT.unavailable,
@@ -44,15 +52,35 @@ function renderAttempt(attempt: Attempt, context: JobContext, job?: DeliveryJob)
   if (attempt.source !== null) {
     article.append(renderSource(LIFECYCLE_TEXT.submittedSource, attempt.source));
   }
-  if (attempt.state === CAPTURE_STATE.accepted && !job) {
+  if (attempt.report) {
+    article.append(renderReport(attempt.report, { problemId: attempt.problemId, images }));
+  }
+  const failed = attempt.state === CAPTURE_STATE.failed;
+  // Only a report whose artifact phase has concluded can be published, so an attempt still being observed
+  // offers no publication control instead of an action that would be refused.
+  if ((attempt.state === CAPTURE_STATE.accepted || failed) && !job && !isPendingReport(attempt.report)) {
     if (selection) {
       const publish = document.createElement('button');
-      publish.textContent = DELIVERY_TEXT.select(selection.owner, selection.name, selection.branch);
+      publish.type = 'button';
+      publish.textContent = failed
+        ? DELIVERY_TEXT.selectFailed(selection.owner, selection.name, selection.branch)
+        : DELIVERY_TEXT.select(selection.owner, selection.name, selection.branch);
       publish.addEventListener(DOM_EVENT.click, async () => {
-        await deliveryAction(publish, state, {
-          type: DELIVERY_MESSAGE.publish, attemptId: attempt.id, expectedConnectionId: selection.connectionId,
-          expectedSelectionId: selection.operationId, publicConfirmed: true,
-        }, context);
+        // A failed attempt is published one record at a time, each confirmed on its own.
+        if (failed && !window.confirm(DELIVERY_TEXT.failedConfirmation(
+          PROGRESS_TEXT.problemHeading(attempt.problemId),
+          attempt.outcome === undefined ? VERDICT_LABEL[GRADING_VERDICT.unknown] : VERDICT_LABEL[attempt.outcome],
+        ))) return;
+        await deliveryAction(publish, state, failed
+          ? {
+            type: DELIVERY_MESSAGE.publishFailed, attemptId: attempt.id,
+            expectedConnectionId: selection.connectionId, expectedSelectionId: selection.operationId,
+            publicConfirmed: true, failedConfirmed: true,
+          }
+          : {
+            type: DELIVERY_MESSAGE.publish, attemptId: attempt.id, expectedConnectionId: selection.connectionId,
+            expectedSelectionId: selection.operationId, publicConfirmed: true,
+          }, context);
       });
       article.append(publish);
     } else {
@@ -81,7 +109,7 @@ async function load(): Promise<void> {
     const jobs = new Map<string, DeliveryJob>();
     const snapshots = new Map<string, Attempt>(reply.attempts.map(attempt => [attempt.id, attempt]));
     for (const job of delivery.jobs) {
-      const snapshot = acceptedJobSnapshot(job);
+      const snapshot = capturedJobSnapshot(job);
       if (!snapshot) continue;
       jobs.set(job.id, job);
       snapshots.set(job.id, snapshot);
@@ -92,7 +120,16 @@ async function load(): Promise<void> {
       selection: delivery.selection, scheduled: unscheduled === null,
       current: () => generation === loadGeneration, reload: load,
     };
-    attempts.replaceChildren(...ordered.map(attempt => renderAttempt(attempt, context, jobs.get(attempt.id))));
+    // Image bytes are held per attempt outside the attempt list, so they are read only for the reports that
+    // name one.
+    const images = new Map<string, DiagramImage[] | null>();
+    for (const attempt of ordered) {
+      if ((attempt.report?.diagrams ?? []).length === 0) continue;
+      images.set(attempt.id, await readDiagramImages(attempt.id));
+    }
+    if (generation !== loadGeneration) return;
+    attempts.replaceChildren(...ordered.map(attempt =>
+      renderAttempt(attempt, context, images.get(attempt.id) ?? null, jobs.get(attempt.id))));
     if (unscheduled) {
       const failure = document.createElement('p');
       failure.textContent = unscheduled.detail;

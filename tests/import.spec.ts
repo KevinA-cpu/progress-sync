@@ -102,6 +102,8 @@ test('an earlier HDLBits solution publishes as an unverified import without touc
   await expect(imports(progress).getByRole('heading', { name: 'hdlbits:step_one', exact: true })).toBeVisible();
   await expect(imports(progress).getByRole('textbox', { name: 'Imported source (read-only)' }))
     .toHaveValue(importedSource);
+  // Nothing observed this submission being graded, so no report is shown or invented for it.
+  await expect(imports(progress).getByRole('heading', { name: 'Submission report', exact: true })).toHaveCount(0);
   expect(server.writes).toHaveLength(baseline);
 
   await publishFirst(progress);
@@ -123,7 +125,7 @@ test('an earlier HDLBits solution publishes as an unverified import without touc
   expect(server.requestsValid).toBe(true);
   const commit = server.writes.find(write => write.path.endsWith('/git/commits'));
   expect((commit?.body as { message?: string } | undefined)?.message)
-    .toBe('Record imported hdlbits:step_one submission 847 (unverified)');
+    .toBe('Record imported hdlbits:step_one save slot 847 (unverified)');
 
   // The learner's own page is untouched: no navigation, no editor write, no native state change.
   expect(problem.url()).toBe('https://hdlbits.01xz.net/wiki/step_one');
@@ -277,7 +279,7 @@ test('import operations reject page senders, page-shaped messages, and stale aut
   // A trusted page cannot forge the content script's own progress message either.
   const forged = await progress.evaluate(async () => chrome.runtime.sendMessage({
     type: 'import:progress', sessionId: '11111111-1111-4111-8111-111111111111', problemId: 'step_one',
-    inventory: 1, total: 1, scanned: 1,
+    inventory: 1, source: 'stats', total: 1, scanned: 1,
     result: { found: true, submissionId: '99', providerLabel: 'Last success: forged', providerStatus: 2, source: 'x' },
   }));
   expect(forged).toEqual({ ok: false, proceed: false });
@@ -390,7 +392,7 @@ test('a fresh profile recovers an import as unverified and refuses forged accept
     await expect(returning.getByRole('status')).toContainText('Verified destination:');
 
     await expect(restored.locator('#recovery-status'))
-      .toHaveText('0 recorded accepted; 1 imported unverified; 3 unverified saved entries.');
+      .toHaveText('0 recorded accepted; 0 recorded failed; 1 imported unverified; 3 unverified saved entries.');
     await expect(restored.getByText('Imported from HDLBits - unverified, no acceptance was observed', { exact: true }))
       .toHaveCount(1);
     await expect(restored.getByText(
@@ -444,7 +446,7 @@ test('a fresh profile adopts an import already published to the same destination
     const remote = await publicationFixture(fresh, target);
     const receipt = remote.commitFiles(
       { [`${root}/solution.v`]: importedSource, [`${root}/import.json`]: record ?? '' },
-      'Record imported hdlbits:step_one submission 847 (unverified)',
+      'Record imported hdlbits:step_one save slot 847 (unverified)',
     );
     await importFixture(fresh, { step_one: { submissionId: '847' } });
     const restored = await fresh.newPage();

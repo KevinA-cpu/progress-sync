@@ -9,6 +9,7 @@ import { type ProgressReply } from '../lib/progress';
 import { type AuthReply } from '../lib/github/schemas';
 import { createGithubService } from '../lib/github/service';
 import { createDestinationService } from '../lib/destination/service';
+import { createRestoreAuthority } from '../lib/destination/restore';
 import { type DestinationReply } from '../lib/destination/schemas';
 import { createDeliveryService } from '../lib/delivery/service';
 import { type DeliveryReply } from '../lib/delivery/schemas';
@@ -26,10 +27,10 @@ const messageEnvelopeSchema = z.object({ type: z.string() });
 export default defineBackground(() => {
   const github = createGithubService();
   const destination = createDestinationService(github);
-  const delivery = createDeliveryService(github, destination, (id, persist) => capture.discardAccepted(id, persist));
+  const delivery = createDeliveryService(github, destination, (id, persist) => capture.discardRecorded(id, persist));
   const recovery = createRecoveryService(github, destination);
   const imports = createImportService(delivery.publishImport, delivery.importedSnapshot);
-  const capture = createCaptureService(delivery.accepted);
+  const capture = createCaptureService(delivery.recorded);
   const requests = { urls: [GRADING_URL], types: [RESOURCE_TYPE.mainFrame, RESOURCE_TYPE.subFrame] as const };
   const filter = { urls: requests.urls, types: [...requests.types] };
   browser.webRequest.onBeforeRequest.addListener(capture.request, filter, [WEB_REQUEST_OPTION.requestBody]);
@@ -108,7 +109,16 @@ export default defineBackground(() => {
     github.alarm(alarm.name);
     delivery.alarm(alarm.name);
   });
-  browser.runtime.onStartup.addListener(() => { delivery.resume(); });
-  delivery.resume();
-  imports.resume();
+  // Queued work waits for the remembered connection to be re-checked, so nothing publishes before the original
+  // account and the originally selected destination have been revalidated. With nothing remembered this resolves
+  // immediately and the session-only behaviour is unchanged.
+  const restore = { authorize: createRestoreAuthority(destination), resumed: () => { delivery.resume(); } };
+  function start(): void {
+    void github.restore(restore).then(() => {
+      delivery.resume();
+      imports.resume();
+    });
+  }
+  browser.runtime.onStartup.addListener(() => { void github.restore(restore).then(() => { delivery.resume(); }); });
+  start();
 });

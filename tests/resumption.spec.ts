@@ -81,7 +81,7 @@ test('worker termination preserves the snapshot and re-arms the schedule in the 
     await expect(progress.getByText('Saved to GitHub', { exact: true })).toBeVisible();
     expect((await onlyJob(progress)).id).toBe(adopted.id);
     expect(server.updates).toBe(1);
-    expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(2);
+    expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(3);
     expect([...server.files.values()]).toContain(submittedBytes);
   } finally {
     gate.resolve();
@@ -184,7 +184,7 @@ test('duplicate and overlapping wakeups share one serialized publication', async
     expect(server.updates).toBe(1);
     expect(server.refCompletions).toBe(1);
     expect(server.writes.filter(write => write.path.endsWith('/git/commits'))).toHaveLength(1);
-    expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(2);
+    expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(3);
   } finally {
     gate.resolve();
   }
@@ -261,7 +261,7 @@ test('a repeatedly failing transfer stops at the bounded budget and stays manual
   await progress.getByRole('button', { name: retryName }).click();
   await expect(progress.getByText('Saved to GitHub', { exact: true })).toBeVisible();
   expect(server.updates).toBe(1);
-  expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(2);
+  expect([...server.files.keys()].filter(path => path.startsWith('progress/'))).toHaveLength(3);
 });
 
 for (const rejection of ['branch policy', 'revoked authorization'] as const) {

@@ -48,6 +48,12 @@ const gitPathSchema = z.union([
   z.tuple([z.literal('blobs'), shaSchema]),
 ]);
 const readSchema = z.strictObject({ path: z.string(), recursive: z.boolean() });
+// Published images are bytes; they are held as their exact bytes in a latin1 string so one file map carries
+// both kinds, and every size and object id comes from the bytes.
+const fileBytes = (path: string, content: string) =>
+  Buffer.from(content, path.endsWith('.png') ? 'latin1' : 'utf8');
+const blobSha = (bytes: Buffer) =>
+  createHash('sha1').update(`blob ${bytes.length}\0`, 'utf8').update(bytes).digest('hex');
 type RecoveryInput = z.infer<typeof recoveryInputSchema>;
 type TreeEntry = z.infer<typeof treeEntrySchema>;
 type TreeEntries = z.infer<typeof treeEntriesSchema>;
@@ -94,8 +100,8 @@ export async function recoveryFixture(
         directories.set(directory, children);
         continue;
       }
-      const bytes = Buffer.from(content, 'utf8');
-      const sha = createHash('sha1').update(`blob ${bytes.length}\0`, 'utf8').update(bytes).digest('hex');
+      const bytes = fileBytes(path, content);
+      const sha = blobSha(bytes);
       blobs.set(sha, blobSchema.parse({
         sha, size: bytes.length, encoding: 'base64', content: bytes.toString('base64'),
       }));
@@ -173,6 +179,32 @@ export async function recoveryFixture(
           ? { name: destination.defaultBranch, commit: { sha: head }, protected: false }
           : { message: 'Not found' },
       });
+    }
+    // One published image, asked for by the page that already recovered the report naming it.
+    const contentsPrefix = `${base}/contents/`;
+    if (path.startsWith(contentsPrefix)) {
+      const query = [...url.searchParams];
+      // Only a read of a published file pinned to a commit is a read of this snapshot. The destination's own
+      // marker check is left to the destination fixture.
+      if (path === `${base}/contents/.progress-sync.json` || method !== 'GET' || request.postData() !== null
+        || query.length !== 1 || query[0]?.[0] !== 'ref'
+        || !shaSchema.safeParse(query[0][1]).success) return route.fallback();
+      if (query[0][1] !== head) return route.fulfill({ status: 404, json: { message: 'Not found' } });
+      const file = path.slice(contentsPrefix.length);
+      server.reads.push({ path, recursive: false });
+      if (server.readGate) await server.readGate;
+      if (server.failStatus !== null) {
+        return route.fulfill({ status: server.failStatus, json: { message: 'SYNTHETIC_PRIVATE_DIAGNOSTIC' } });
+      }
+      const content = files.get(file);
+      if (content === undefined || !destination.exists || destination.empty) {
+        return route.fulfill({ status: 404, json: { message: 'Not found' } });
+      }
+      const bytes = fileBytes(file, content);
+      return route.fulfill({ json: {
+        type: 'file', encoding: 'base64', size: bytes.length, sha: blobSha(bytes),
+        name: file.slice(file.lastIndexOf('/') + 1), path: file, content: bytes.toString('base64'),
+      } });
     }
     if (path !== `${base}/git` && !path.startsWith(`${base}/git/`)) return route.fallback();
     const parsed = gitPathSchema.safeParse(path.slice(`${base}/git/`.length).split('/'));

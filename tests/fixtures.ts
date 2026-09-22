@@ -28,9 +28,12 @@ const problemPage = `<!doctype html>
   </script>
 </body></html>`;
 
+// The provider renders its message box on every result, empty when the compiler said nothing, so a result the
+// artifact phase can conclude as soon as it stops changing is the ordinary case rather than a special one.
 export const successPage = `<!doctype html>
 <html><head><title>step_one: Simulation - HDLBits</title></head>
-<body><h2>step_one &mdash; Compile and simulate</h2><h2>Status: Success!</h2></body></html>`;
+<body><h2>step_one &mdash; Compile and simulate</h2><h2>Status: Success!</h2>
+<div class="msgbox msg_none"><div class="warn_msgs"></div></div></body></html>`;
 
 export async function installProviderRoutes(context: BrowserContext): Promise<void> {
   await context.route('**/*', async route => {
@@ -76,6 +79,9 @@ export async function launchExtensionProfile(extensionPath: string, profilePath:
     args: [
       `--disable-extensions-except=${extensionPath}`,
       `--load-extension=${extensionPath}`,
+      // The extension can send its first request before routing is installed. Resolution is broken so that such
+      // a request fails as an unreachable network instead of reaching a real site.
+      '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost',
     ],
   });
   await installProviderRoutes(context);

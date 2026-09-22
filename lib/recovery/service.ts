@@ -2,15 +2,15 @@ import { browser, type Browser } from 'wxt/browser';
 import { EXTENSION_PAGE } from '../constants/browser';
 import { DESTINATION_ISSUE } from '../constants/destination';
 import { AUTH_ISSUE } from '../constants/github';
-import { RECOVERY_MESSAGE, RECOVERY_STATUS, RECOVERY_TEXT } from '../constants/recovery';
+import { RECOVERY_ENTRY, RECOVERY_MESSAGE, RECOVERY_STATUS, RECOVERY_TEXT } from '../constants/recovery';
 import type { GithubService } from '../github/service';
 import { AuthFault } from '../github/schemas';
 import type { DestinationService } from '../destination/service';
 import { DestinationFault } from '../destination/schemas';
 import {
-  RecoveryFault, recoveryRequestSchema, type RecoveryReply, type RecoveryState,
+  RecoveryFault, recoveryRequestSchema, type RecoveryImageReply, type RecoveryReply, type RecoveryState,
 } from './schemas';
-import { recoverProgress } from './api';
+import { recoverDiagramImage, recoverProgress } from './api';
 import { readRecoveryCache, recoveryCacheKey, writeRecoveryCache } from './cache';
 
 function errorMessage(error: unknown, aborted = false): string {
@@ -101,7 +101,34 @@ export function createRecoveryService(github: GithubService, destination: Destin
       throw error;
     }
   }
-  async function message(value: unknown, sender: Browser.runtime.MessageSender): Promise<RecoveryReply> {
+  // An image is read from the record the current snapshot already verified, so the page can only ask for a
+  // file that a recovered report names, and only its published bytes are ever returned.
+  async function image(request: { path: string; name: string }): Promise<RecoveryImageReply> {
+    return github.withConnection(async (session, sessionGuard, signal) => {
+      const target = await destination.selection(session);
+      const state = await readRecoveryCache(target);
+      const snapshot = state?.snapshot;
+      const entry = snapshot?.entries.find(item => item.path === request.path);
+      const report = entry && (entry.state === RECOVERY_ENTRY.failed || entry.state === RECOVERY_ENTRY.recorded)
+        ? entry.report : undefined;
+      const diagram = report?.diagrams?.find(item => item.name === request.name);
+      if (!snapshot || !entry || !diagram) throw new RecoveryFault(RECOVERY_TEXT.imageEntryUnknown);
+      const root = entry.path.slice(0, entry.path.lastIndexOf('/'));
+      async function guard() {
+        await sessionGuard();
+        await destination.guardSelection(session, target);
+      }
+      return {
+        ok: true as const,
+        image: await recoverDiagramImage(target, session, guard, signal, {
+          commitSha: snapshot.commitSha, root, diagram,
+        }),
+      };
+    });
+  }
+  async function message(
+    value: unknown, sender: Browser.runtime.MessageSender,
+  ): Promise<RecoveryReply | RecoveryImageReply> {
     if (sender.id !== browser.runtime.id || sender.url !== browser.runtime.getURL(EXTENSION_PAGE.options)
       || sender.frameId !== 0 || !sender.documentId || sender.tab?.id === undefined) {
       return { ok: false, error: RECOVERY_TEXT.invalidInput };
@@ -115,6 +142,8 @@ export function createRecoveryService(github: GithubService, destination: Destin
         case RECOVERY_MESSAGE.refresh:
           await restore(parsed.data);
           return await view();
+        case RECOVERY_MESSAGE.image:
+          return await image(parsed.data);
       }
     } catch (error) {
       return { ok: false, error: errorMessage(error) };
